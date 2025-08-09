@@ -2,7 +2,7 @@ settings:
   referencing_keys:
     sample_key: input_ids
     prediction_key: logits
-  model_path: ./checkpoints/2025-02-24__08-53-31_5b6cf982/eid_2025-02-24__08-53-31_5b6cf982-model-seen_steps_48-seen_tokens_393216-target_steps_95-target_tokens_778240.bin
+  model_path: ./checkpoints/2025-08-07__10-09-17_5b6cf982/eid_2025-08-07__10-09-17_5b6cf982-model-seen_steps_20-seen_tokens_655360-target_steps_23-target_tokens_753664.bin
   device: 0
   sequence_length: 1024
 
@@ -64,19 +64,19 @@ model:
             base_freq: 10000
     attention_implementation: pytorch_flash
     activation_type: swiglu
-    attention_norm:
+    attention_norm_config:
       component_key: layer_norm
       variant_key: layer_norm
       config:
         normalized_shape: ${model.config.n_embd}
         eps: 1.0e-05
-    ffn_norm:
+    ffn_norm_config:
       component_key: layer_norm
       variant_key: layer_norm
       config:
         normalized_shape: ${model.config.n_embd}
         eps: 1.0e-05
-    lm_head_norm:
+    lm_head_norm_config:
       component_key: layer_norm
       variant_key: layer_norm
       config:

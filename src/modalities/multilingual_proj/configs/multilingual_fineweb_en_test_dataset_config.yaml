@@ -1,0 +1,17 @@
+settings:
+  dst_path: /raid/s3/opengptx/behzad_shomali/multilingual_llm_proj/mem_map/multilingual_fineweb_en_test.pbin
+  eod_token: 'null'
+  index_path: /raid/s3/opengptx/behzad_shomali/multilingual_llm_proj/mem_map/multilingual_fineweb_en_test.idx
+  jq_pattern: .text
+  num_cpus: ${node_env:num_cpus}
+  processed_samples_queue_size: 300
+  processing_batch_size: 1000
+  raw_samples_queue_size: 300
+  src_path: /raid/s3/opengptx/behzad_shomali/multilingual_llm_proj/texts/splitted/multilingual_fineweb_en_test.jsonl
+tokenizer:
+  component_key: tokenizer
+  config:
+    padding: false
+    pretrained_model_name_or_path: Eurolingua/Modalities_8B_3.73T
+    truncation: false
+  variant_key: pretrained_hf_tokenizer

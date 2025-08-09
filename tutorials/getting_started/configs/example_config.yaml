@@ -14,9 +14,9 @@ settings:
     train_dataset_path: ./data/mem_map/redpajama_v2_samples_512_train.pbin
     val_dataset_path: ./data/mem_map/redpajama_v2_samples_512_test.pbin
   intervals:
-    training_log_interval_in_steps: 48
-    checkpointing_interval_in_steps: 48
-    evaluation_interval_in_steps: 48
+    training_log_interval_in_steps: 5
+    checkpointing_interval_in_steps: 5
+    evaluation_interval_in_steps: 5
   consistency_enforcement:
     enforce_tokens_per_step_consistency: true
     enforce_last_step_logged: false
@@ -60,11 +60,15 @@ collate_fn:
 
 train_dataset:
   component_key: dataset
-  variant_key: packed_mem_map_dataset_continuous
+  # variant_key: packed_mem_map_dataset_continuous
+  # config:
+  #   raw_data_path: ${settings.paths.train_dataset_path}
+  #   sequence_length: ${settings.step_profile.sequence_length}
+  #   sample_key:  ${settings.referencing_keys.sample_key}
+  variant_key: combined
   config:
-    raw_data_path: ${settings.paths.train_dataset_path}
-    sequence_length: ${settings.step_profile.sequence_length}
-    sample_key:  ${settings.referencing_keys.sample_key}
+    datasets: none
+
 
 train_dataloader:
   component_key: data_loader
