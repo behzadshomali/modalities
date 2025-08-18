@@ -1,0 +1,9 @@
+model:
+  name: my_hf_model
+  class: transformers  # tells Lighteval to use its built-in HF backend
+  args:
+    pretrained: "Behzadshomali/Multilingual5"
+
+
+tasks:
+  - leaderboard|truthfulqa:mc|3|1
