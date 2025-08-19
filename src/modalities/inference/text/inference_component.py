@@ -128,17 +128,20 @@ class TextInferenceComponent:
                         print(f"\n\n{'🎯 GENERATION ' + str(i+1) + f' (Temperature: {temp})'.center(60, '=')}")
                     else:
                         print(f"\n\n{'🎯 GENERATING (Temperature: ' + str(temp) + ')'.center(60, '=')}")
-
-                    self.temperature = temp
-                    self.generate_tokens(context=full_prompt)
+                    try:
+                        self.temperature = temp
+                        self.generate_tokens(context=full_prompt)
+                    except:
+                        continue
 
                 print("\n\n" + "🏁 ALL GENERATIONS COMPLETE".center(60, "="))
                 print("=" * 60)
-
             except KeyboardInterrupt:
                 print("\n\n👋 Closing app... Goodbye!")
                 break
 
+
+           
     @staticmethod
     def _get_prompt(template: str) -> str:
         # Regular expression to find {variable_name}
