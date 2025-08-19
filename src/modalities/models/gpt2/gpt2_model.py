@@ -2,7 +2,7 @@ import logging
 import math
 from abc import abstractmethod
 from enum import Enum
-from typing import Annotated, Optional
+from typing import Annotated, Mapping, Optional, Any
 
 import torch
 import torch.nn as nn
@@ -880,6 +880,16 @@ class GPT2LLM(NNModel):
                 self.transformer.lm_head.weight
             )  # https://paperswithcode.com/method/weight-tying
 
+    def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False):
+        """
+        Load the state dictionary into the model. Forwards to nn.Module.load_state_dict().
+        Used for backward compatibility with the old state dict format.
+        """
+        if "lm_head.weight" in state_dict:
+            state_dict["transformer.lm_head.weight"] = state_dict["lm_head.weight"]
+            del state_dict["lm_head.weight"]
+        return super().load_state_dict(state_dict, strict=strict, assign=assign)
+    
     def forward_impl(self, inputs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """
         Forward pass implementation of the GPT2LLM module.
