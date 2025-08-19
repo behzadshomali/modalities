@@ -1,5 +1,4 @@
 settings:
-  device: 4
   experiment_id: ${modalities_env:experiment_id}
   config_file_path: ${modalities_env:config_file_path}
   referencing_keys:
@@ -16,7 +15,7 @@ settings:
     test_dataset_path: /raid/s3/opengptx/behzad_shomali/multilingual_llm_proj/mem_map/multilingual_fineweb_deu_Latn_test.pbin
   intervals:
     training_log_interval_in_steps: 128
-    checkpointing_interval_in_steps: 512
+    checkpointing_interval_in_steps: 3072
     evaluation_interval_in_steps: 512
   consistency_enforcement:
     enforce_tokens_per_step_consistency: true
@@ -24,19 +23,15 @@ settings:
     enforce_last_step_evaluated: false
     enforce_last_step_checkpointed: false
   step_profile:
-    gradient_accumulation_steps: 5
+    gradient_accumulation_steps: 10
     local_train_micro_batch_size: 3
     sequence_length: 2048
+  warmstart_checkpoint_paths:
+    model_checkpoint_path: "/raid/s3/opengptx/behzad_shomali/checkpoints/2025-08-11__13-49-24_a0c553c2/eid_2025-08-11__13-49-24_a0c553c2-model-seen_steps_86016-seen_tokens_15854469120-target_steps_162760-target_tokens_29999923200.bin"
+    optimizer_checkpoint_path: "/raid/s3/opengptx/behzad_shomali/checkpoints/2025-08-11__13-49-24_a0c553c2/eid_2025-08-11__13-49-24_a0c553c2-optimizer-seen_steps_86016-seen_tokens_15854469120-target_steps_162760-target_tokens_29999923200.bin"
+    checkpoint_folder_path: "/raid/s3/opengptx/behzad_shomali/checkpoints/2025-08-11__13-49-24_a0c553c2/eid_2025-08-11__13-49-24_a0c553c2-model-seen_steps_86016-seen_tokens_15854469120-target_steps_162760-target_tokens_29999923200.bin"
   training_target: 
     num_target_tokens: 29999923200 # global_num_tokens // sequence_length // num_ranks // local_micro_batch_size // gradient_accumulation_steps
-      # component_key: number_conversion
-      # variant_key: num_tokens_from_packed_mem_map_dataset_continuous
-      # config:
-      #   dataset_path: ${settings.paths.train_dataset_path}
-      #   sequence_length: ${settings.step_profile.sequence_length}
-      #   num_ranks: ${settings.cuda_env.world_size}
-      #   local_micro_batch_size: ${settings.step_profile.local_train_micro_batch_size}
-      #   gradient_accumulation_steps: ${settings.step_profile.gradient_accumulation_steps}
     num_target_steps:  # for the batch progress subscriber
       component_key: number_conversion 
       variant_key: num_steps_from_num_tokens
@@ -47,10 +42,22 @@ settings:
         sequence_length: ${settings.step_profile.sequence_length}
         gradient_accumulation_steps: ${settings.step_profile.gradient_accumulation_steps}
   training_progress:
-    global_num_seen_tokens: 0
-    num_seen_steps: 0
-    num_seen_samples: 0
-    last_step: -1
+    global_num_seen_tokens: 
+      component_key: number_conversion
+      variant_key: global_num_seen_tokens_from_checkpoint_path
+      config:
+        checkpoint_path: ${settings.warmstart_checkpoint_paths.checkpoint_folder_path}
+    num_seen_steps:  # for the batch progress subscriber
+      component_key: number_conversion
+      variant_key: num_seen_steps_from_checkpoint_path
+      config:
+        checkpoint_path: ${settings.warmstart_checkpoint_paths.checkpoint_folder_path}
+    num_seen_samples: 0 # set it to 0 in purpose to force the model see the first 15B tokens twice
+    last_step:  
+      component_key: number_conversion
+      variant_key: last_step_from_checkpoint_path
+      config:
+        checkpoint_path: ${settings.warmstart_checkpoint_paths.checkpoint_folder_path}
 
 collate_fn:
   component_key: collate_fn
@@ -277,7 +284,7 @@ checkpoint_saving:
       component_key: checkpoint_saving_strategy
       variant_key: save_k_most_recent_checkpoints_strategy
       config:
-        k: -1   # -1 to save all checkpoints
+        k: 15   # -1 to save all checkpoints
     checkpoint_saving_execution:
       component_key: checkpoint_saving_execution
       variant_key: fsdp1
@@ -293,14 +300,6 @@ loss_fn:
     target_key: ${settings.referencing_keys.target_key}
     prediction_key: ${settings.referencing_keys.prediction_key}
 
-# device_mesh:
-#   component_key: device_mesh
-#   variant_key: default
-#   config:
-#     device_type: cuda
-#     data_parallel_replicate_degree: 1
-#     data_parallel_shard_degree: ${settings.cuda_env.world_size} # i.e., fully sharded
-#     world_size: ${settings.cuda_env.world_size}
 
 app_state:
   component_key: app_state
@@ -318,15 +317,15 @@ app_state:
 
 wrapped_model:
   component_key: model
-  variant_key: fsdp1_wrapped
+  variant_key: fsdp1_checkpointed
   config:
     model:
       instance_key: model
       pass_type: BY_REFERENCE
-    sync_module_states: true
-    mixed_precision_settings: BF_16
-    sharding_strategy: FULL_SHARD
-    block_names: [GPT2Block]
+    checkpoint_loading:
+      instance_key: checkpoint_loading
+      pass_type: BY_REFERENCE
+    checkpoint_path: ${settings.warmstart_checkpoint_paths.model_checkpoint_path}
 
 model:
   component_key: model
@@ -408,6 +407,21 @@ lr_scheduler:
 
 optimizer:
   component_key: optimizer
+  variant_key: fsdp1_checkpointed
+  config:
+    optimizer:
+      instance_key: optimizer_original
+      pass_type: BY_REFERENCE
+    wrapped_model:
+      instance_key: wrapped_model
+      pass_type: BY_REFERENCE
+    checkpoint_loading:
+      instance_key: checkpoint_loading
+      pass_type: BY_REFERENCE
+    checkpoint_path: ${settings.warmstart_checkpoint_paths.optimizer_checkpoint_path}
+
+optimizer_original:
+  component_key: optimizer
   variant_key: adam_w
   config:
     lr: 0.0001
@@ -452,37 +466,11 @@ evaluation_subscriber:
     directory: /raid/s3/opengptx/behzad_shomali/wandb_storage
     config_file_path: ${settings.config_file_path}
 
-# mfu_calculator:
-#   component_key: mfu_calculator
-#   variant_key: gpt2
-#   config:
-#     n_layer: ${model_raw.config.n_layer}
-#     sequence_length: ${settings.step_profile.sequence_length}
-#     n_embd: ${model_raw.config.n_embd}
-#     world_size: ${settings.cuda_env.world_size}
-#     wrapped_model:
-#       instance_key: initialized_model
-#       pass_type: BY_REFERENCE
-  
-
-checkpointed_model:
-  component_key: model
-  variant_key: fsdp1_checkpointed
-  config: 
-    checkpoint_loading:
-      component_key: checkpoint_loading
-      variant_key: torch
-      config:
-        device: ${settings.device}
-        precision: BF16
-    model:
-      instance_key: model_raw
-      pass_type: BY_REFERENCE
-    checkpoint_path: /raid/s3/opengptx/behzad_shomali/checkpoints/2025-08-15__16-16-34_c15155eb/eid_2025-08-15__16-16-34_c15155eb-model-seen_steps_159744-seen_tokens_29444014080-target_steps_162760-target_tokens_29999923200.bin
-
-  
-tokenizer:
-  component_key: tokenizer
-  variant_key: pretrained_sp_tokenizer
+checkpoint_loading:
+  component_key: checkpoint_loading
+  variant_key: fsdp1
   config:
-    tokenizer_model_file: /home/behzad_shomali/modalities/Eurolingua_tokenizer/tokenizer.model
+    global_rank: ${settings.cuda_env.global_rank}
+    block_names: [GPT2Block]
+    mixed_precision_settings: BF_16
+    sharding_strategy: FULL_SHARD
