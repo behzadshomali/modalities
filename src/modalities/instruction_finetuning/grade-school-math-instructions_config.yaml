@@ -1,0 +1,48 @@
+sft:
+  output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/
+  
+  num_train_epochs: 5
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 2
+  gradient_checkpointing: False
+  max_length: 1024
+  optim: adafactor
+  learning_rate: 3e-5
+
+  bf16: True
+  tf32: True
+  
+  packing: True
+  assistant_only_loss: False
+  use_liger_kernel: True
+  
+  do_eval: True
+  eval_on_start: True
+  logging_steps: 5
+  eval_steps: 20
+  eval_strategy: steps
+  save_strategy: steps
+  save_steps: 100
+  report_to: wandb
+  push_to_hub: False
+
+  metric_for_best_model: eval_sacrebleu
+  greater_is_better: True
+  load_best_model_at_end: True
+  disable_tqdm: False
+
+peft:
+  lora_alpha: 96
+  lora_dropout: 0.1
+  r: 32
+  bias: none
+  task_type: CAUSAL_LM
+  target_modules: all-linear
+
+dataset:
+  name: "qwedsacf/grade-school-math-instructions"
+  test_split_ratio: 0.01
+  random_seed: 2000
+  instruction_col: INSTRUCTION
+  response_col: RESPONSE
+  remove_columns: ['INSTRUCTION', 'RESPONSE', 'SOURCE']

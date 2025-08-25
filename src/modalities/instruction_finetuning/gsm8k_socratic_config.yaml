@@ -1,0 +1,84 @@
+sft:
+  output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/
+  
+  num_train_epochs: 4
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 4
+  gradient_checkpointing: True
+  max_length: 2048
+  optim: adafactor
+  learning_rate: !!float 3e-5
+  completion_only_loss: True
+  assistant_only_loss: False
+  max_grad_norm: 3.0
+
+  lr_scheduler_type: cosine_with_min_lr
+  lr_scheduler_kwargs: 
+    min_lr: !!float 1e-5
+
+  weight_decay: 0.15
+  warmup_ratio: 0.2
+
+  fp16: False
+  bf16: True
+  tf32: False
+  
+  packing: True
+  use_liger_kernel: True
+  
+  do_eval: True
+  eval_on_start: True
+  logging_steps: 5
+  eval_steps: 20
+  eval_strategy: steps
+  save_strategy: steps
+  save_total_limit: 3
+  save_steps: 250
+  report_to: wandb
+  push_to_hub: False
+
+  metric_for_best_model: eval_sacrebleu
+  greater_is_better: True
+  load_best_model_at_end: False
+  disable_tqdm: False
+
+# peft:
+#   lora_alpha: 64
+#   lora_dropout: 0.05
+#   r: 32
+#   bias: lora_only
+#   task_type: CAUSAL_LM
+#   target_modules: all-linear
+
+datasets:
+  - is_in_HF: True
+    name: openai/gsm8k
+    subset: socratic
+    test_split_ratio: 0.015
+    instruction_col: question
+    response_col: answer
+    remove_columns: ['question', 'answer']
+    random_seed: 2000
+    weight: 0.70
+
+  - is_in_HF: True
+    name: nlile/hendrycks-MATH-benchmark
+    test_split_ratio: 0.015
+    instruction_col: problem
+    response_col: solution
+    remove_columns: ['problem', 'solution']
+    random_seed: 2000
+    weight: 0.20
+  
+  - is_in_HF: False
+    name: /raid/s3/opengptx/behzad_shomali/instruction_tuning/data/code_alpaca_20k.json
+    test_split_ratio: 0.015
+    instruction_col: instruction
+    response_col: output
+    remove_columns: ['instruction', 'output']
+    random_seed: 2000
+    weight: 0.10
+  
+
+wandb:
+  project: Teuken3.73T_IT_GSM8K_socratic_MATH_CODE
