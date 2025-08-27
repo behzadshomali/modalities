@@ -1,0 +1,104 @@
+preprocess_function: format_openmathinstruct2
+new_cache_dir: /raid/s3/opengptx/behzad_shomali/custom_hf_cache/
+
+sft:
+  output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/
+
+  num_train_epochs: 1
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 8
+  gradient_checkpointing: False
+  max_length: 1024
+  optim: adamw_torch_fused
+  learning_rate: !!float 5e-5
+  completion_only_loss: True
+  assistant_only_loss: False
+  max_grad_norm: 3.0
+
+  dataloader_num_workers: 16
+  # dataloader_pin_memory: False
+  save_only_model: True
+
+  lr_scheduler_type: linear
+  # lr_scheduler_kwargs: 
+  #   min_lr: !!float 1e-5
+
+  weight_decay: 0.1
+  warmup_steps: 100
+
+  fp16: False
+  bf16: True
+  tf32: False
+  
+  packing: True
+  use_liger_kernel: True
+  
+  do_eval: True
+  eval_on_start: True
+  logging_steps: 100
+  eval_steps: 400
+  eval_strategy: steps
+  save_strategy: steps
+  save_total_limit: 3
+  save_steps: 5274
+  report_to: wandb
+  push_to_hub: False
+
+  metric_for_best_model: eval_sacrebleu
+  greater_is_better: True
+  load_best_model_at_end: False
+  disable_tqdm: False
+
+peft:
+  r: 32
+  lora_alpha: 64
+  lora_dropout: 0.05
+  bias: none
+  task_type: CAUSAL_LM
+  target_modules: [lm_head, all-linear]
+  use_rslora: True
+
+datasets:
+  - is_in_HF: True
+    name: nvidia/OpenMathInstruct-2
+    split: train_1M
+    test_split_ratio: 0.01
+    instruction_col: problem
+    response_col: generated_solution
+    remove_columns: ['problem', 'generated_solution']
+    random_seed: 2000
+    weight: 1.0
+  # - is_in_HF: True
+  #   name: openai/gsm8k
+  #   split: train
+  #   subset: socratic
+  #   test_split_ratio: 0.015
+  #   instruction_col: question
+  #   response_col: answer
+  #   remove_columns: ['question', 'answer']
+  #   random_seed: 2000
+  #   weight: 0.70
+
+  # - is_in_HF: True
+  #   name: nlile/hendrycks-MATH-benchmark
+  #   split: train
+  #   test_split_ratio: 0.015
+  #   instruction_col: problem
+  #   response_col: solution
+  #   remove_columns: ['problem', 'solution']
+  #   random_seed: 2000
+  #   weight: 0.20
+  
+  # - is_in_HF: False
+  #   name: /raid/s3/opengptx/behzad_shomali/instruction_tuning/data/code_alpaca_20k.json
+  #   split: train
+  #   test_split_ratio: 0.015
+  #   instruction_col: instruction
+  #   response_col: output
+  #   remove_columns: ['instruction', 'output']
+  #   random_seed: 2000
+  #   weight: 0.10
+  
+
+wandb:
+  project: Teuken3.73T_IT_OpenMathInstruct-2

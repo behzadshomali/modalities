@@ -1,6 +1,8 @@
 sft:
   output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/
   
+  preprocess_function: format_openmathinstruct2
+
   num_train_epochs: 4
   per_device_train_batch_size: 4
   gradient_accumulation_steps: 4
