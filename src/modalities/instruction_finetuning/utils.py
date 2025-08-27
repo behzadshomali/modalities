@@ -9,6 +9,7 @@ from datetime import datetime
 import asyncio
 import threading
 import wandb
+from typing import Dict, Any
 
 def load_config(config_path):
     with open(config_path, "r") as f:
@@ -27,17 +28,14 @@ def load_config(config_path):
     sft_args['output_dir'] = output_dir
     sft_args['learning_rate'] = float(sft_args['learning_rate'])
 
-    args['sft'] = sft_args
+    args['sft'] = sft_args    
+    preprocess_function_str = args['preprocess_function']
+    if preprocess_function_str == "format_openmathinstruct2":
+        args['preprocess_function'] = format_openmathinstruct2
+    elif preprocess_function_str == "preprocess_function_simple":
+        args['preprocess_function'] = preprocess_function_simple
     
     return args
-
-def preprocess_function(example, instruction_col, response_col):
-    return {
-        "messages": [
-            {"role": "user", "content": example[instruction_col]},
-            {"role": "assistant", "content": example[response_col]}
-        ]
-    }
 
 async def lighteval_async(checkpoint_path, cuda_devices="3,4"):
     output_dir = "/raid/s3/opengptx/behzad_shomali/evaluation_results/sft_intermediate_results/"
@@ -157,7 +155,7 @@ class LightEvalCallback(TrainerCallback):
             print("[LightEvalCallback] All evaluations finished and logged.")
 
 
-def preprocess_coda_alpaca(raw_data):
+def clean_coda_alpaca(raw_data):
     final_data = []
     for row in raw_data:
         if len(row['input']) == 0:
@@ -168,3 +166,54 @@ def preprocess_coda_alpaca(raw_data):
 
     print(f"Kept {len(final_data)/len(raw_data)} from code alpaca!")
     return final_data
+
+def format_openmathinstruct2(
+    example: Dict[str, Any], 
+    instruction_col: str, 
+    response_col: str
+) -> Dict[str, Any]:
+    """Format OpenMathInstruct-2 dataset to chat format with instruction template."""
+    instruction = "Solve the following math problem. Explain your reasoning and put the final answer in \\boxed{}."
+    formatted_problem = f"{instruction}\n\n{example[instruction_col]}"
+
+    return {
+        "messages": [
+            {"role": "user", "content": formatted_problem},
+            {"role": "assistant", "content": example[response_col]},
+        ]
+    }
+
+def preprocess_function_simple(example, instruction_col, response_col):
+    return {
+        "messages": [
+            {"role": "user", "content": example[instruction_col]},
+            {"role": "assistant", "content": example[response_col]}
+        ]
+    }
+
+def set_cache_dirs(new_cache_dir):
+    transformers_cache = os.path.join(new_cache_dir, "transformers")
+    datasets_cache = os.path.join(new_cache_dir, "datasets")
+    tokenizers_cache = os.path.join(new_cache_dir, "tokenizers")
+    hub_cache = os.path.join(new_cache_dir, "hub")
+
+    for path in [transformers_cache, datasets_cache, tokenizers_cache, hub_cache]:
+        os.makedirs(path, exist_ok=True)
+
+    os.environ["HF_HOME"] = new_cache_dir
+    os.environ["TRANSFORMERS_CACHE"] = transformers_cache
+    os.environ["HF_DATASETS_CACHE"] = datasets_cache
+    os.environ["HF_TOKENIZERS_CACHE"] = tokenizers_cache
+    os.environ["HF_HUB_CACHE"] = hub_cache
+
+def print_trainable_params(model):
+    trainable_params = 0
+    all_params = 0
+    for _, param in model.named_parameters():
+        num_params = param.numel()
+        all_params += num_params
+        if param.requires_grad:
+            trainable_params += num_params
+    print(f"Trainable params: {trainable_params} | "
+          f"All params: {all_params} | "
+          f"Trainable%: {100 * trainable_params / all_params:.2f}")
