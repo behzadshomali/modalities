@@ -12,7 +12,7 @@ CUDA_VISIBLE_DEVICES=4 accelerate launch \
     --num_machines 1 \
     -m \
     lighteval accelerate \
-    "model_name=/raid/s3/opengptx/behzad_shomali/instruction_tuning/Teuken3.73T_IT_OpenMathInstruct-2/2025_08_30-16_23_44/rank512/checkpoint-4798/lora_merged/,trust_remote_code=True,use_chat_template=True" \
+    "model_name=/raid/s3/opengptx/behzad_shomali/instruction_tuning/Teuken3.73T_IT_OpenMathInstruct-2/2025_08_30-19_33_56/rank8/checkpoint-9084/lora_merged,trust_remote_code=True,use_chat_template=True" \
     "leaderboard|gsm8k|5|1,leaderboard|gsm8k|0|0,leaderboard|hellaswag|0|0,leaderboard|hellaswag|5|1,leaderboard|truthfulqa:mc|5|1,leaderboard|arc:challenge|5|1,leaderboard|mmlu:high_school_mathematics|0|0,leaderboard|mmlu:high_school_mathematics|5|1" \
-    --output-dir /raid/s3/opengptx/behzad_shomali/evaluation_results/teuken3.7B_IT_LoRA-OpenMathInstruct-2/2025_08_30-16_23_44/rank512/checkpoint-4798/ \
+    --output-dir /raid/s3/opengptx/behzad_shomali/evaluation_results/Qwen/2025_08_30-19_33_56/rank8/checkpoint-9084/ \
     --use-chat-template
