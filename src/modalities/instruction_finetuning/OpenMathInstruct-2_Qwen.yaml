@@ -1,19 +1,17 @@
 preprocess_function: format_openmathinstruct2
 new_cache_dir: /raid/s3/opengptx/behzad_shomali/custom_hf_cache/
 train_size: 300000
-val_size: 0.01
-random_seed: 2000
-model_name: Behzadshomali/Teuken3.7B
+model_name: Qwen/Qwen3-4B-Base
 
-learn_embed: True
-learn_normalization: True
+# learn_embed: True
+# learn_normalization: True
 
 sft:
   output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/
   
   eval_accumulation_steps: 1
 
-  num_train_epochs: 1
+  num_train_epochs: 2
   per_device_train_batch_size: 4
   gradient_accumulation_steps: 8
   gradient_checkpointing: False
@@ -24,7 +22,7 @@ sft:
   assistant_only_loss: False
   max_grad_norm: 3.0
 
-  dataloader_num_workers: 12
+  dataloader_num_workers: 4
   # dataloader_pin_memory: False
   save_only_model: True
 
@@ -48,7 +46,7 @@ sft:
   eval_steps: 400
   eval_strategy: steps
   save_strategy: steps
-  save_total_limit: 4
+  # save_total_limit: 4
   save_steps: 2000
   report_to: wandb
   push_to_hub: False
@@ -79,53 +77,13 @@ datasets:
   - is_in_HF: True
     name: nvidia/OpenMathInstruct-2
     split: train_1M
+    test_split_ratio: 0.01
     instruction_col: problem
     response_col: generated_solution
     remove_columns: ['problem', 'generated_solution', 'expected_answer', 'problem_source']
-    weight: 0.97
-  # - is_in_HF: True
-  #   name: openai/gsm8k
-  #   split: train
-  #   subset: socratic
-  #   instruction_col: question
-  #   response_col: answer
-  #   remove_columns: ['question', 'answer']
-  #   weight: 0.70
-
-  # - is_in_HF: True
-  #   name: nlile/hendrycks-MATH-benchmark
-  #   split: train
-  #   instruction_col: problem
-  #   response_col: solution
-  #   remove_columns: ['problem', 'solution']
-  #   weight: 0.20
-
-  # - is_in_HF: True
-  #   name: alespalla/chatbot_instruction_prompts
-  #   split: train
-  #   instruction_col: prompt
-  #   response_col: response
-  #   remove_columns: ['prompt', 'response']
-  #   weight: 0.07
-
-  # - is_in_HF: True
-  #   name: HuggingFaceTB/smoltalk2
-  #   subset: SFT
-  #   split: Mixture_of_Thoughts_science_no_think
-  #   # instruction_col: problem
-  #   # response_col: solution
-  #   remove_columns: ['chat_template_kwargs', 'source', 'messages']
-  #   weight: 0.2
-  
-  - is_in_HF: False
-    name: /raid/s3/opengptx/behzad_shomali/instruction_tuning/data/code_alpaca_20k.json
-    split: train
-    instruction_col: instruction
-    response_col: output
-    remove_columns: ['instruction', 'output']
-    weight: 0.03
+    random_seed: 2000
+    weight: 1
   
 
 wandb:
   project: Teuken3.73T_IT_OpenMathInstruct-2
-  name: test

@@ -2,9 +2,9 @@ settings:
   referencing_keys:
     sample_key: input_ids
     prediction_key: logits
-  model_path: ./checkpoints/2025-08-07__10-09-17_5b6cf982/eid_2025-08-07__10-09-17_5b6cf982-model-seen_steps_20-seen_tokens_655360-target_steps_23-target_tokens_753664.bin
-  device: 0
-  sequence_length: 1024
+  model_path: /home/behzad_shomali/modalities/tutorials/getting_started/checkpoints/2025-08-07__10-09-17_5b6cf982/eid_2025-08-07__10-09-17_5b6cf982-model-seen_steps_20-seen_tokens_655360-target_steps_23-target_tokens_753664.bin
+  device: 5
+  sequence_length: 256
 
 text_inference_component:
   component_key: inference_component
@@ -19,9 +19,9 @@ text_inference_component:
       pass_type: BY_REFERENCE
     sequence_length: ${settings.sequence_length}
     eod_token: <|endoftext|>
-    prompt_template: "{prompt_input}" # "<instruction> Du bist Moody, ein LLM welches Menschen helfen soll. user: {prompt_input}"
+    prompt_template: "{user_prompt}"
+    chat_template: "System: {system_prompt}\n\nUser: {user_prompt}"
     temperature: 1
-    # chat: false
 
 checkpointed_model:
   component_key: model
@@ -62,32 +62,27 @@ model:
             n_head: ${model.config.n_head_q} #it has to be head_q here
             seq_length_dim: -2
             base_freq: 10000
-    attention_implementation: pytorch_flash
+    attention_implementation: manual
     activation_type: swiglu
     attention_norm_config:
-      component_key: layer_norm
-      variant_key: layer_norm
+      norm_type: layer_norm
       config:
         normalized_shape: ${model.config.n_embd}
         eps: 1.0e-05
     ffn_norm_config:
-      component_key: layer_norm
-      variant_key: layer_norm
+      norm_type: layer_norm
       config:
         normalized_shape: ${model.config.n_embd}
         eps: 1.0e-05
     lm_head_norm_config:
-      component_key: layer_norm
-      variant_key: layer_norm
+      norm_type: layer_norm
       config:
         normalized_shape: ${model.config.n_embd}
-        eps: 1e-5
+        eps: 1.0e-05
     use_weight_tying: true
 
 tokenizer:
   component_key: tokenizer
-  variant_key: pretrained_hf_tokenizer
+  variant_key: pretrained_sp_tokenizer
   config:
-    pretrained_model_name_or_path: tokenizer
-    padding: false
-    truncation: false
+    tokenizer_model_file: /home/behzad_shomali/modalities/Eurolingua_tokenizer/tokenizer.model
