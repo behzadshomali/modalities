@@ -12,6 +12,22 @@ import wandb
 from typing import Dict, Any
 from merge_lora import merge_lora_adapter
 
+
+def transform(example):
+    user_message = None
+    assistant_message = None
+    
+    for msg in example["messages"]:
+        if msg["role"] == "user":
+            user_message = msg["content"]
+        elif msg["role"] == "assistant":
+            assistant_message = msg["content"]
+    
+    return {
+        "instruction_col": user_message,
+        "response_col": assistant_message
+    }
+
 def load_config(config_path):
     with open(config_path, "r") as f:
         args = yaml.safe_load(f)
