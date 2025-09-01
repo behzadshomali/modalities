@@ -10,6 +10,7 @@ import asyncio
 import threading
 import wandb
 from typing import Dict, Any
+from merge_lora import merge_lora_adapter
 
 def load_config(config_path):
     with open(config_path, "r") as f:
@@ -38,6 +39,7 @@ def load_config(config_path):
     return args
 
 async def lighteval_async(checkpoint_path, cuda_devices="3,4"):
+    checkpoint_path = merge_lora_adapter(checkpoint_path)
     output_dir = "/raid/s3/opengptx/behzad_shomali/evaluation_results/sft_intermediate_results/"
     multi_gpu_command = "--multi_gpu" if len(cuda_devices.split(',')) > 1 else ""
 
@@ -48,9 +50,10 @@ CUDA_VISIBLE_DEVICES={cuda_devices} accelerate launch \
     -m \
     lighteval accelerate \
     "model_name={checkpoint_path},trust_remote_code=True,use_chat_template=True" \
-    "leaderboard|gsm8k|0|0,leaderboard|hellaswag|0|0" \
+    "leaderboard|gsm8k|7|0,leaderboard|hellaswag|7|0" \
     "--max-samples 100" \
     --output-dir {output_dir} \
+    --use-chat-template
 """
     
     # Run subprocess asynchronously
@@ -164,7 +167,7 @@ def clean_coda_alpaca(raw_data):
                 "output": row["output"]
             })
 
-    print(f"Kept {len(final_data)/len(raw_data)} from code alpaca!")
+    print(f"Kept {len(final_data)}, {len(final_data)/len(raw_data)} from code alpaca!")
     return final_data
 
 def format_openmathinstruct2(
