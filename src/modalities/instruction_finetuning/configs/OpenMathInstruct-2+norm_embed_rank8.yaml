@@ -1,0 +1,75 @@
+datasets:
+- instruction_col: problem
+  is_in_HF: true
+  name: nvidia/OpenMathInstruct-2
+  random_seed: 2000
+  remove_columns:
+  - problem
+  - generated_solution
+  - expected_answer
+  - problem_source
+  response_col: generated_solution
+  split: train_1M
+  test_split_ratio: 0.01
+  weight: 1
+learn_embed: true
+learn_normalization: true
+model_name: Behzadshomali/Teuken3.7B
+new_cache_dir: /raid/s3/opengptx/behzad_shomali/custom_hf_cache/
+output_dir_orig: /raid/s3/opengptx/behzad_shomali/instruction_tuning/
+peft:
+  bias: none
+  lora_alpha: 16
+  lora_dropout: 0.05
+  r: 8
+  target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  task_type: CAUSAL_LM
+  use_rslora: true
+preprocess_function: format_openmathinstruct2
+random_seed: 2000
+sft:
+  assistant_only_loss: false
+  bf16: true
+  completion_only_loss: false
+  dataloader_num_workers: 4
+  disable_tqdm: false
+  do_eval: true
+  eval_accumulation_steps: 1
+  eval_on_start: true
+  eval_steps: 400
+  eval_strategy: steps
+  fp16: false
+  gradient_accumulation_steps: 8
+  gradient_checkpointing: false
+  greater_is_better: true
+  learning_rate: 1.5e-05
+  load_best_model_at_end: false
+  logging_steps: 20
+  lr_scheduler_type: linear
+  max_grad_norm: 1.0
+  max_length: 1024
+  metric_for_best_model: eval_sacrebleu
+  num_train_epochs: 1
+  optim: adamw_torch_fused
+  optim_args: beta1=0.9, beta2=0.95
+  output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/Teuken3.7B_IT_OpenMathInstruct-2/2025_09_04-17_30_34
+  packing: true
+  per_device_train_batch_size: 8
+  push_to_hub: false
+  report_to: wandb
+  save_only_model: true
+  save_steps: 2000
+  save_strategy: steps
+  tf32: false
+  use_liger_kernel: false
+  warmup_steps: 150
+  weight_decay: 0.0
+train_size: 900000
+val_size: 10000
+wandb:
+  name: lora+_rank8_alpha16_900K
+  project: Teuken3.7B_IT_OpenMathInstruct-2
