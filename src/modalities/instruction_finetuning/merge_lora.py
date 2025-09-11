@@ -1,21 +1,43 @@
 import os
+import gc
+import torch
 import shutil
-os.environ["CUDA_VISIBLE_DEVICES"] = "4,5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3"
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 from trl import setup_chat_format
 from huggingface_hub import HfApi
 
+def get_trainable_weights(checkpoint_path, trainable_params):
+    weights_all = torch.load(os.path.join(checkpoint_path, "pytorch_model.bin"))
+
+    weights_trainable = {}
+    weights_lora = {}
+    for k in weights_all:
+        if "lora" in k:
+            k_new = k.replace("default.", "") if "default." in k else k
+            weights_lora[k_new] = weights_all[k]
+        else:
+            if any([n in k for n in trainable_params]):
+                # len("base_model.model.") = 17
+                weights_trainable[k[17:]] = weights_all[k]
+
+    adapter_model = os.path.join(checkpoint_path, "adapter_model.bin")
+    trainable_params = os.path.join(checkpoint_path, "trainable_params.bin")
+    if not os.path.isfile(adapter_model):
+        torch.save(weights_lora, adapter_model)
+    torch.save(weights_trainable, trainable_params)
 
 
 def merge_lora_adapter(
-        lora_model, 
-        base_model, 
-        save_on_disk=True, 
-        upload_to_HF=False,
-        **kwargs_HF
-    ):
+    lora_model, 
+    base_model, 
+    save_on_disk=True, 
+    upload_to_HF=False,
+    **kwargs_HF
+):
+    save_path = None
     tokenizer = AutoTokenizer.from_pretrained(base_model)
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
@@ -26,10 +48,18 @@ def merge_lora_adapter(
     if tokenizer.chat_template is None:
         model, tokenizer = setup_chat_format(model, tokenizer)
 
-    # Load LoRA on top of base
-    model = PeftModel.from_pretrained(model, lora_model)
+    # get_trainable_weights(lora_model, ['embed', 'norm'])
 
-    # Merge LoRA adapters into the base model
+    trainable_params = os.path.join(lora_model, "trainable_params.bin")
+    if os.path.isfile(trainable_params):
+        print("Loading trainable parameters from:", trainable_params)
+        model.load_state_dict(torch.load(trainable_params, map_location=model.device), strict=False)
+    model = PeftModel.from_pretrained(
+        model,
+        lora_model,
+        device_map="auto",
+        torch_dtype=torch.float16,
+    )
     model = model.merge_and_unload()
 
     if save_on_disk:
@@ -67,12 +97,30 @@ def merge_lora_adapter(
             revision=revision
         )
 
+    del model, tokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return save_path
+
+def apply_merge_on_all_checkpints(base_model, experiment_dir):
+    for directory in os.listdir(experiment_dir):
+        if directory.startswith("checkpoint"):
+            checkpoint_dir = os.path.join(experiment_dir, directory)
+            if any(["lora_merged" in sub_dir for sub_dir in os.listdir(checkpoint_dir)]):
+                continue
+            print("Merging:", checkpoint_dir)
+            merge_lora_adapter(
+                lora_model=checkpoint_dir, 
+                base_model=base_model,
+                save_on_disk=True,
+                upload_to_HF=False
+            )
+
 if __name__ == "__main__":
-    base_model =  "Qwen/Qwen3-4B-Base" #"Behzadshomali/Teuken3.7B"
-    lora_model = "/raid/s3/opengptx/behzad_shomali/instruction_tuning/Teuken3.73T_IT_OpenMathInstruct-2/2025_08_30-19_33_56/rank8/checkpoint-9084/"
-    merge_lora_adapter(
-        lora_model, 
-        base_model,
-        save_on_disk=True,
-        upload_to_HF=False
-    )
+    base_model =  "Behzadshomali/Teuken3.7B"
+    # Qwen/Qwen3-4B-Base
+    # base_model = "meta-llama/Llama-3.2-3B"
+    # experiment_dir = "/raid/s3/opengptx/behzad_shomali/instruction_tuning/Teuken3.7B_IT_OpenMathInstruct-2/2025_09_05-17_03_49_Teuken3.7B_IT_OpenMathInstruct-2/2025_09_06-12_39_29_lora+_rank16_alpha32_1M(Markus)/2025_09_06-12_43_26_lora+_rank16_alpha32_1M(Markus)/2025_09_09-12_18_24_lora+_rank16_alpha32_1M(Markus)/2025_09_09-12_18_50_lora+_rank16_alpha32_1M(Markus)/2025_09_09-12_19_31_lora+_rank16_alpha32_1M(Markus)/2025_09_09-12_20_30_lora+_rank16_alpha32_1M(Markus)/2025_09_09-13_11_10_lora+_rank16_alpha32_1M(Markus)/2025_09_09-13_12_29_lora+_rank16_alpha32_1M(Markus)/2025_09_09-13_13_39_lora+_rank16_alpha32_1M(Markus)/2025_09_09-13_15_40_lora+_rank16_alpha32_1M(Markus)/2025_09_09-13_22_31_lora+_rank16_alpha32_1M(Markus)/2025_09_09-13_26_29_lora+_rank16_alpha32_1M(Markus)/2025_09_09-17_35_41_lora+_rank16_alpha32_1M(Markus)/2025_09_09-17_36_54"
+    experiment_dir = "/raid/s3/opengptx/behzad_shomali/instruction_tuning/_lora+_rank16_alpha32_1M(Markus)/2025_09_10-20_00_40/"
+    apply_merge_on_all_checkpints(base_model, experiment_dir)

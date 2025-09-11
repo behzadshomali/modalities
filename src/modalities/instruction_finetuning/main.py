@@ -8,21 +8,22 @@ from utils import load_config, set_cache_dirs
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
-config_path = "/home/behzad_shomali/modalities/src/modalities/instruction_finetuning/OpenMathInstruct-2_Qwen.yaml"
+config_path = "/home/behzad_shomali/modalities/src/modalities/instruction_finetuning/configs/OpenMathInstruct-2+norm_embed_rank16_markus_modified_wsd.yaml"
 config = load_config(config_path).copy()
 set_cache_dirs(new_cache_dir=config["new_cache_dir"])
 
 
-from utils import load_config, clean_coda_alpaca, print_trainable_params, transform
+from utils import load_config, clean_coda_alpaca, print_trainable_params, transform, SavePeftModelCallback
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 import wandb
 from datasets import load_dataset, concatenate_datasets, Dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM,
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from trl import setup_chat_format, clone_chat_template
 from trl.trainer import SFTConfig, SFTTrainer
@@ -124,16 +125,17 @@ for dataset_obj, nw in zip(config["datasets"], norm_weights):
         shuffle=True
     )
     
-    sampled_train = split["train"]
+    offset = dataset_obj["offset"]
+    sampled_train = split["train"].select(range(offset, len(split["train"])))
     sampled_test = split["test"]
 
     final_train_datasets.append(sampled_train)
     final_val_datasets.append(sampled_test)
 
-final_train_dataset = concatenate_datasets(final_train_datasets).shuffle(seed=42)
-final_val_dataset = concatenate_datasets(final_val_datasets).shuffle(seed=42)
+final_train_dataset = concatenate_datasets(final_train_datasets).shuffle(seed=config["random_seed"])
+final_val_dataset = concatenate_datasets(final_val_datasets).shuffle(seed=config["random_seed"])
 print("Train size:", len(final_train_dataset))
-print("Val size:", len(final_val_datasets))
+print("Val size:", len(final_val_dataset))
 
 
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
@@ -143,7 +145,8 @@ try:
         trust_remote_code=True, 
         torch_dtype="auto",
         device_map="auto",
-        attn_implementation="flash_attention_2"
+        attn_implementation="flash_attention_2",
+        # max_memory={0: "10GiB", 1: "10GiB", 2: "81GiB", 3: "81GiB", 4: "81GiB"}
     )
 except:
     print("flash_attention_2 is not available!")
@@ -152,6 +155,7 @@ except:
         trust_remote_code=True, 
         torch_dtype="auto",
         device_map="auto",
+        # max_memory={0: "10GiB", 1: "10GiB", 2: "81GiB", 3: "81GiB", 4: "81GiB"}
     )
 
 print_trainable_params(model)
@@ -166,12 +170,19 @@ wandb.init(
 )
 wandb.config.update(config)
 
-
-sft_args = SFTConfig(**config['sft'])
+sft_config = config['sft']
+if "output_dir_orig" in sft_config:
+    del sft_config["output_dir_orig"]
+sft_args = SFTConfig(**sft_config)
 
 if "peft" in config:
     peft_config = LoraConfig(**config["peft"])
+    
+    print_trainable_params(model)
+    
     model = get_peft_model(model, peft_config)
+
+    print_trainable_params(model)
 
     keys = []
     if "learn_embed" in config and config["learn_embed"]:
@@ -194,11 +205,12 @@ trainer = SFTTrainer(
     compute_metrics=compute_metrics,
     preprocess_logits_for_metrics=preprocess_logits_for_metrics,
     # callbacks=[LightEvalCallback(cuda_devices="3", output_dir=config['sft']['output_dir'])]
+    callbacks=[SavePeftModelCallback,]
 )
 trainer.model.print_trainable_parameters()
 
 try:
-    trainer.train()
+    trainer.train(config.get("resume_from_checkpoint", False))
 except KeyboardInterrupt:
     shutil.rmtree(config["sft"]["output_dir"])
 

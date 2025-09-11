@@ -12,6 +12,18 @@ import wandb
 from typing import Dict, Any
 from merge_lora import merge_lora_adapter
 
+import logging
+import torch
+
+from transformers import (
+    TrainerCallback,
+    TrainingArguments,
+    TrainerState,
+    TrainerControl,
+)
+
+PREFIX_CHECKPOINT_DIR = "checkpoint"
+
 
 def transform(example):
     user_message = None
@@ -28,7 +40,11 @@ def transform(example):
         "response_col": assistant_message
     }
 
-def load_config(config_path):
+import os
+import yaml
+from datetime import datetime
+
+def load_config(config_path, overwrite_config=True):
     with open(config_path, "r") as f:
         args = yaml.safe_load(f)
     
@@ -36,22 +52,50 @@ def load_config(config_path):
     now = datetime.now()
     dir_name = now.strftime("%Y_%m_%d-%H_%M_%S")
 
-    if "wandb" in args:
-        project_name = args['wandb']['project']
-    else:
-        project_name = ""
+    # Handle wandb project name if present
+    project_name = args.get("wandb", {}).get("name", "")
 
-    output_dir = os.path.join(sft_args['output_dir'], project_name, dir_name)
-    sft_args['output_dir'] = output_dir
+    if not args.get("resume_from_checkpoint", False):
+        # Always build output dir from the original one (not the already-modified one)
+        base_dir = args.get("output_dir_orig", sft_args['output_dir'])
+        args['output_dir_orig'] = base_dir  # ensure stored once
+
+        output_dir = os.path.join(f"{base_dir}_{project_name}", dir_name)
+        sft_args['output_dir'] = output_dir
+    
+    # Cast learning rate to float for safety
     sft_args['learning_rate'] = float(sft_args['learning_rate'])
 
     args['sft'] = sft_args    
+
+    # Resolve preprocess function string to actual function
     preprocess_function_str = args['preprocess_function']
     if preprocess_function_str == "format_openmathinstruct2":
         args['preprocess_function'] = format_openmathinstruct2
     elif preprocess_function_str == "preprocess_function_simple":
         args['preprocess_function'] = preprocess_function_simple
-    
+
+    for d in args["datasets"]:
+        if 'offset' in d:
+            offset_value = 1
+            if type(d['offset']) is str:
+                for number in d['offset'].split(','):
+                    number = int(number.strip())
+                    offset_value *= number
+            else:
+                offset_value = d['offset']
+        else:
+            offset_value = 0
+
+        d['offset'] = offset_value
+
+    if overwrite_config:
+        # Save back without dumping function objects
+        args_to_save = dict(args)
+        args_to_save['preprocess_function'] = preprocess_function_str
+        with open(config_path, "w") as f:
+            yaml.safe_dump(args_to_save, f)
+
     return args
 
 async def lighteval_async(checkpoint_path, cuda_devices="3,4"):
@@ -236,3 +280,35 @@ def print_trainable_params(model):
     print(f"Trainable params: {trainable_params} | "
           f"All params: {all_params} | "
           f"Trainable%: {100 * trainable_params / all_params:.2f}")
+    
+class SavePeftModelCallback(TrainerCallback):
+    def on_save(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
+        checkpoint_folder = os.path.join(args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}")
+        os.makedirs(checkpoint_folder, exist_ok=True)
+
+        modules_to_save = []
+        for module_name in ["embed", "norm"]:
+            if len(module_name.strip()) > 0:
+                modules_to_save.append(module_name)
+
+        # Save trainable parameters if exist
+        if modules_to_save:
+            state_dict = kwargs["model"].state_dict()
+            to_save = {}
+            for key, value in state_dict.items():
+                if any(module_name in key for module_name in modules_to_save):
+                    to_save[key.replace("base_model.model.", "")] = value
+            torch.save(to_save, os.path.join(checkpoint_folder, "trainable_params.bin"))
+            logging.info(f"Trainable parameters saved at: {checkpoint_folder}")
+
+        # Save LoRA adapter weight
+        kwargs["model"].save_pretrained(checkpoint_folder)
+        logging.info(f"LoRA adapter weights saved at: {checkpoint_folder}")
+
+        return control
