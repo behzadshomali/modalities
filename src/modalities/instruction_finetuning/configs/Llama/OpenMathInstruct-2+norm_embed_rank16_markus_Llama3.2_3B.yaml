@@ -2,7 +2,6 @@ datasets:
 - instruction_col: problem
   is_in_HF: true
   name: nvidia/OpenMathInstruct-2
-  offset: 0
   random_seed: 2000
   remove_columns:
   - problem
@@ -15,9 +14,8 @@ datasets:
   weight: 1
 learn_embed: true
 learn_normalization: true
-model_name: Behzadshomali/Teuken3.7B
+model_name: meta-llama/Llama-3.2-3B
 new_cache_dir: /raid/s3/opengptx/behzad_shomali/custom_hf_cache/
-output_dir_orig: /raid/s3/opengptx/behzad_shomali/instruction_tuning/
 peft:
   bias: none
   lora_alpha: 32
@@ -36,42 +34,41 @@ sft:
   assistant_only_loss: false
   bf16: true
   completion_only_loss: false
-  dataloader_num_workers: 4
+  dataloader_num_workers: 2
   disable_tqdm: false
   do_eval: true
   eval_accumulation_steps: 1
   eval_on_start: true
-  eval_steps: 400
+  eval_steps: 500
   eval_strategy: steps
   fp16: false
   gradient_accumulation_steps: 8
   gradient_checkpointing: false
   greater_is_better: true
-  learning_rate: 0.0001
+  learning_rate: 3.0e-05
   load_best_model_at_end: false
   logging_steps: 20
-  lr_scheduler_type: constant_with_warmup
+  lr_scheduler_type: cosine
   max_grad_norm: 0.1
   max_length: 1024
   metric_for_best_model: eval_sacrebleu
   num_train_epochs: 1
   optim: paged_adamw_8bit
-  output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/_lora+_rank16_alpha32_1M(Markus)/2025_09_11-09_41_17
+  output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/Llama32_OpenMathInstruct-2/
   packing: true
   per_device_eval_batch_size: 8
   per_device_train_batch_size: 1
   push_to_hub: false
   report_to: wandb
   save_only_model: true
-  save_steps: 1000
+  save_steps: 500
   save_strategy: steps
-  save_total_limit: 5
   tf32: false
   use_liger_kernel: false
-  warmup_ratio: 0.03
+  warmup_ratio: 0.1
   weight_decay: 0.1
+  save_total_limit: 30
 train_size: 990000
 val_size: 10000
 wandb:
-  name: lora+_rank16_alpha32_1M(Markus)
-  project: Teuken3.7B_IT_OpenMathInstruct-2
+  project: Llama-3.2-3B_IT_OpenMathInstruct-2

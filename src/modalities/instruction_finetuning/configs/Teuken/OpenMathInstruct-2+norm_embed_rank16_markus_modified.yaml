@@ -2,7 +2,6 @@ datasets:
 - instruction_col: problem
   is_in_HF: true
   name: nvidia/OpenMathInstruct-2
-  offset: 96000
   random_seed: 2000
   remove_columns:
   - problem
@@ -15,8 +14,9 @@ datasets:
   weight: 1
 learn_embed: true
 learn_normalization: true
-model_name: /raid/s3/opengptx/behzad_shomali/instruction_tuning/_lora+_rank16_alpha32_1M(Markus)/2025_09_10-20_00_40/checkpoint-12000/lora_merged/
+model_name: Behzadshomali/Teuken3.7B
 new_cache_dir: /raid/s3/opengptx/behzad_shomali/custom_hf_cache/
+offset: 0
 output_dir_orig: /raid/s3/opengptx/behzad_shomali/instruction_tuning/
 peft:
   bias: none
@@ -28,6 +28,9 @@ peft:
   - k_proj
   - v_proj
   - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
   task_type: CAUSAL_LM
   use_rslora: true
 preprocess_function: format_openmathinstruct2
@@ -36,7 +39,7 @@ sft:
   assistant_only_loss: false
   bf16: true
   completion_only_loss: false
-  dataloader_num_workers: 4
+  # dataloader_num_workers: 2
   disable_tqdm: false
   do_eval: true
   eval_accumulation_steps: 1
@@ -44,34 +47,34 @@ sft:
   eval_steps: 400
   eval_strategy: steps
   fp16: false
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 4
   gradient_checkpointing: false
   greater_is_better: true
-  learning_rate: 0.0001
+  learning_rate: 4.0e-05
   load_best_model_at_end: false
   logging_steps: 20
-  lr_scheduler_type: cosine
+  lr_scheduler_type: constant_with_warmup
   max_grad_norm: 0.1
   max_length: 1024
-  max_steps: 1000
   metric_for_best_model: eval_sacrebleu
+  num_train_epochs: 1
   optim: paged_adamw_8bit
-  output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/_lora+_rank16_alpha32_1M_Markus/2025_09_11-10_21_32
+  output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/_lora+_rank8_alpha16_1M_Markus/2025_09_11-11_24_08
   packing: true
   per_device_eval_batch_size: 8
   per_device_train_batch_size: 1
   push_to_hub: false
   report_to: wandb
   save_only_model: true
-  save_steps: 200
+  save_steps: 2000
   save_strategy: steps
-  save_total_limit: 5
+  # save_total_limit: 10
   tf32: false
   use_liger_kernel: false
-  warmup_ratio: 0.0
+  warmup_ratio: 0.03
   weight_decay: 0.1
 train_size: 990000
 val_size: 10000
 wandb:
-  name: lora+_rank16_alpha32_1M_Markus
+  name: lora+_rank16_alpha16_1M_Markus
   project: Teuken3.7B_IT_OpenMathInstruct-2
