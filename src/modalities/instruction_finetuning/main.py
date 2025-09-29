@@ -1,22 +1,29 @@
 import os
-import gc
-import torch
-import shutil
-import json
-from utils import load_config, set_cache_dirs
 
 
-
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
-config_path = "/home/behzad_shomali/modalities/src/modalities/instruction_finetuning/configs/OpenMathInstruct-2+norm_embed_rank16_markus_modified_wsd.yaml"
+from utils import load_config
+
+
+
+config_path = "/home/behzad_shomali/modalities/src/modalities/instruction_finetuning/configs/OpenMathInstruct-2+norm_embed_rank64_markus_Llama3.1_8B.yaml"
 config = load_config(config_path).copy()
+
+
+
+
+import gc
+import shutil
+import json
+
+
+from utils import load_config, clean_coda_alpaca, print_trainable_params, transform, SavePeftModelCallback, WandbOffsetCallback, set_cache_dirs, EvalCallback
+
 set_cache_dirs(new_cache_dir=config["new_cache_dir"])
 
-
-from utils import load_config, clean_coda_alpaca, print_trainable_params, transform, SavePeftModelCallback
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -30,6 +37,8 @@ from trl.trainer import SFTConfig, SFTTrainer
 from peft import LoraConfig, get_peft_model
 
 import evaluate
+
+print("!"*20, "# visible devices:", torch.cuda.device_count(), "!"*20)
 
 
 sacrebleu = evaluate.load("sacrebleu")
@@ -46,10 +55,13 @@ def preprocess_logits_for_metrics(logits, labels, temperature=1.0):
 
     if not packing:
         flat_probs = probs.reshape(-1, probs.size(-1))
+        # Sample from the distribution
+        # sampled_tokens = torch.multinomial(flat_probs, num_samples=1).squeeze(-1)
         sampled_tokens = flat_probs.argmax(dim=-1)  # pick max prob token
         sampled_tokens = sampled_tokens.view(probs.size(0), probs.size(1))
     else:
         sampled_tokens = probs.squeeze().argmax(dim=-1).unsqueeze(0)
+        # sampled_tokens = torch.multinomial(probs.squeeze(), num_samples=1).squeeze().unsqueeze(0)
     
     return sampled_tokens
 
@@ -125,8 +137,7 @@ for dataset_obj, nw in zip(config["datasets"], norm_weights):
         shuffle=True
     )
     
-    offset = dataset_obj["offset"]
-    sampled_train = split["train"].select(range(offset, len(split["train"])))
+    sampled_train = split["train"]
     sampled_test = split["test"]
 
     final_train_datasets.append(sampled_train)
@@ -134,6 +145,10 @@ for dataset_obj, nw in zip(config["datasets"], norm_weights):
 
 final_train_dataset = concatenate_datasets(final_train_datasets).shuffle(seed=config["random_seed"])
 final_val_dataset = concatenate_datasets(final_val_datasets).shuffle(seed=config["random_seed"])
+
+dataset_offset = config["dataset_offset"]
+final_train_dataset = final_train_dataset.select(range(dataset_offset, len(final_train_dataset)))
+
 print("Train size:", len(final_train_dataset))
 print("Val size:", len(final_val_dataset))
 
@@ -146,7 +161,7 @@ try:
         torch_dtype="auto",
         device_map="auto",
         attn_implementation="flash_attention_2",
-        # max_memory={0: "10GiB", 1: "10GiB", 2: "81GiB", 3: "81GiB", 4: "81GiB"}
+        # max_memory={0: "81GiB", 1: "0GiB"}
     )
 except:
     print("flash_attention_2 is not available!")
@@ -155,7 +170,7 @@ except:
         trust_remote_code=True, 
         torch_dtype="auto",
         device_map="auto",
-        # max_memory={0: "10GiB", 1: "10GiB", 2: "81GiB", 3: "81GiB", 4: "81GiB"}
+        # max_memory={0: "81GiB", 1: "0GiB"}
     )
 
 print_trainable_params(model)
@@ -164,6 +179,7 @@ if tokenizer.chat_template is None:
 print_trainable_params(model)
 
 wandb_name = config['wandb']['name'] if 'name' in config['wandb'] else config['sft']['output_dir'].split("/")[-1]
+
 wandb.init(
     project=config['wandb']['project'], 
     name=wandb_name
@@ -205,14 +221,16 @@ trainer = SFTTrainer(
     compute_metrics=compute_metrics,
     preprocess_logits_for_metrics=preprocess_logits_for_metrics,
     # callbacks=[LightEvalCallback(cuda_devices="3", output_dir=config['sft']['output_dir'])]
-    callbacks=[SavePeftModelCallback,]
+    callbacks=[SavePeftModelCallback(), EvalCallback(eval_gpu=config["eval_device"], source_model_path=config['model_name'], hf_home=config['new_cache_dir'])]
 )
+# EvalCallback(eval_gpu=config["eval_device"], source_model_path=config['model_name'], hf_home=config['new_cache_dir'])
 trainer.model.print_trainable_parameters()
 
 try:
     trainer.train(config.get("resume_from_checkpoint", False))
 except KeyboardInterrupt:
-    shutil.rmtree(config["sft"]["output_dir"])
+    # shutil.rmtree(config["sft"]["output_dir"])
+    pass
 
 wandb.finish()
 

@@ -2,7 +2,6 @@ import os
 import gc
 import torch
 import shutil
-os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3"
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
@@ -51,9 +50,10 @@ def merge_lora_adapter(
     # get_trainable_weights(lora_model, ['embed', 'norm'])
 
     trainable_params = os.path.join(lora_model, "trainable_params.bin")
-    if os.path.isfile(trainable_params):
-        print("Loading trainable parameters from:", trainable_params)
-        model.load_state_dict(torch.load(trainable_params, map_location=model.device), strict=False)
+    # if os.path.isfile(trainable_params):
+    print("Loading trainable parameters from:", trainable_params)
+    model.load_state_dict(torch.load(trainable_params, map_location=model.device), strict=False)
+    
     model = PeftModel.from_pretrained(
         model,
         lora_model,
@@ -113,14 +113,21 @@ def apply_merge_on_all_checkpints(base_model, experiment_dir):
             merge_lora_adapter(
                 lora_model=checkpoint_dir, 
                 base_model=base_model,
-                save_on_disk=True,
+                save_on_disk=True,  
                 upload_to_HF=False
             )
 
 if __name__ == "__main__":
+    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
     base_model =  "Behzadshomali/Teuken3.7B"
     # Qwen/Qwen3-4B-Base
     # base_model = "meta-llama/Llama-3.2-3B"
     # experiment_dir = "/raid/s3/opengptx/behzad_shomali/instruction_tuning/Teuken3.7B_IT_OpenMathInstruct-2/2025_09_05-17_03_49_Teuken3.7B_IT_OpenMathInstruct-2/2025_09_06-12_39_29_lora+_rank16_alpha32_1M(Markus)/2025_09_06-12_43_26_lora+_rank16_alpha32_1M(Markus)/2025_09_09-12_18_24_lora+_rank16_alpha32_1M(Markus)/2025_09_09-12_18_50_lora+_rank16_alpha32_1M(Markus)/2025_09_09-12_19_31_lora+_rank16_alpha32_1M(Markus)/2025_09_09-12_20_30_lora+_rank16_alpha32_1M(Markus)/2025_09_09-13_11_10_lora+_rank16_alpha32_1M(Markus)/2025_09_09-13_12_29_lora+_rank16_alpha32_1M(Markus)/2025_09_09-13_13_39_lora+_rank16_alpha32_1M(Markus)/2025_09_09-13_15_40_lora+_rank16_alpha32_1M(Markus)/2025_09_09-13_22_31_lora+_rank16_alpha32_1M(Markus)/2025_09_09-13_26_29_lora+_rank16_alpha32_1M(Markus)/2025_09_09-17_35_41_lora+_rank16_alpha32_1M(Markus)/2025_09_09-17_36_54"
     experiment_dir = "/raid/s3/opengptx/behzad_shomali/instruction_tuning/_lora+_rank16_alpha32_1M(Markus)/2025_09_10-20_00_40/"
-    apply_merge_on_all_checkpints(base_model, experiment_dir)
+    # apply_merge_on_all_checkpints(base_model, experiment_dir)
+    merge_lora_adapter(
+        lora_model="/raid/s3/opengptx/behzad_shomali/instruction_tuning/_lora+_rank16_alpha32_1M_lmHead/2025_09_15-12_33_51/checkpoint-16000/",
+        base_model=base_model,
+        save_on_disk=True,  
+        upload_to_HF=False
+    )
