@@ -1,13 +1,8 @@
 import yaml
-import time
-import os
 from pathlib import Path
 from transformers import TrainerCallback
 import json
-import shutil
 from datetime import datetime
-import asyncio
-import threading
 import wandb
 from typing import Dict, Any
 from merge_lora import merge_lora_adapter
@@ -15,12 +10,25 @@ from merge_lora import merge_lora_adapter
 import logging
 import torch
 
+"""Evaluation utilities for model assessment."""
+import json
+import logging
+import os
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from filelock import FileLock
+import wandb
+
 from transformers import (
     TrainerCallback,
     TrainingArguments,
     TrainerState,
     TrainerControl,
 )
+
+import os
 
 PREFIX_CHECKPOINT_DIR = "checkpoint"
 
@@ -47,20 +55,20 @@ from datetime import datetime
 def load_config(config_path, overwrite_config=True):
     with open(config_path, "r") as f:
         args = yaml.safe_load(f)
-    
+
     sft_args = args['sft']
     now = datetime.now()
     dir_name = now.strftime("%Y_%m_%d-%H_%M_%S")
 
     # Handle wandb project name if present
-    project_name = args.get("wandb", {}).get("name", "")
+    # project_name = args.get("wandb", {}).get("name", "")
 
     if not args.get("resume_from_checkpoint", False):
         # Always build output dir from the original one (not the already-modified one)
         base_dir = args.get("output_dir_orig", sft_args['output_dir'])
         args['output_dir_orig'] = base_dir  # ensure stored once
 
-        output_dir = os.path.join(f"{base_dir}_{project_name}", dir_name)
+        output_dir = os.path.join(f"{base_dir}", dir_name)
         sft_args['output_dir'] = output_dir
     
     # Cast learning rate to float for safety
@@ -75,147 +83,44 @@ def load_config(config_path, overwrite_config=True):
     elif preprocess_function_str == "preprocess_function_simple":
         args['preprocess_function'] = preprocess_function_simple
 
-    for d in args["datasets"]:
-        if 'offset' in d:
-            offset_value = 1
-            if type(d['offset']) is str:
-                for number in d['offset'].split(','):
-                    number = int(number.strip())
-                    offset_value *= number
-            else:
-                offset_value = d['offset']
+    if "dataset_offset" in args:
+        dataset_offset_value = 1
+        if type(args['dataset_offset']) is str:
+            for number in args['dataset_offset'].split('*'):
+                number = int(number.strip())
+                dataset_offset_value *= number
         else:
-            offset_value = 0
+            dataset_offset_value = args['dataset_offset']
 
-        d['offset'] = offset_value
+    else:
+        dataset_offset_value = 0
 
-    if overwrite_config:
-        # Save back without dumping function objects
-        args_to_save = dict(args)
-        args_to_save['preprocess_function'] = preprocess_function_str
-        with open(config_path, "w") as f:
-            yaml.safe_dump(args_to_save, f)
+    args['dataset_offset'] = dataset_offset_value
+
+    if "global_step" in args:
+        global_step_value = args['global_step']
+    else:
+        global_step_value = 1
+    args['global_step'] = global_step_value
+
+
+    wandb_name = f"ga{args['sft']['gradient_accumulation_steps']}-lr{args['sft']['learning_rate']}-wd{args['sft']['weight_decay']}-mgn{args['sft']['max_grad_norm']}"
+    if "peft" in args:
+        wandb_name += f"-lora{args['peft']['r']}"
+
+    args['wandb']['name'] = wandb_name
+
+
+    # if overwrite_config:
+    args_to_save = dict(args)
+    args_to_save['preprocess_function'] = preprocess_function_str
+    if not os.path.exists(sft_args['output_dir']):
+        os.makedirs(sft_args['output_dir'], exist_ok=False)
+    
+    with open(os.path.join(sft_args['output_dir'], "config.yaml"), "w") as f:
+        yaml.safe_dump(args_to_save, f)
 
     return args
-
-async def lighteval_async(checkpoint_path, cuda_devices="3,4"):
-    checkpoint_path = merge_lora_adapter(checkpoint_path)
-    output_dir = "/raid/s3/opengptx/behzad_shomali/evaluation_results/sft_intermediate_results/"
-    multi_gpu_command = "--multi_gpu" if len(cuda_devices.split(',')) > 1 else ""
-
-    command = f"""\
-CUDA_VISIBLE_DEVICES={cuda_devices} accelerate launch \
-    --main_process_port 2000 \
-    --num_processes {len(cuda_devices.split(','))} \
-    -m \
-    lighteval accelerate \
-    "model_name={checkpoint_path},trust_remote_code=True,use_chat_template=True" \
-    "leaderboard|gsm8k|7|0,leaderboard|hellaswag|7|0" \
-    "--max-samples 100" \
-    --output-dir {output_dir} \
-    --use-chat-template
-"""
-    
-    # Run subprocess asynchronously
-    proc = await asyncio.create_subprocess_shell(
-        command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=os.getcwd()
-    )
-
-    stdout, stderr = await proc.communicate()
-
-    if proc.returncode != 0:
-        print("Evaluation failed!", stderr.decode())
-        return None
-
-    # Find latest results JSON
-    output_dir = Path(output_dir)
-    json_files = [f for f in output_dir.glob("*.json") if f.is_file()]
-
-    if not json_files:
-        return None
-
-    json_files.sort(key=lambda f: f.stat().st_ctime, reverse=True)
-    results_file = json_files[0]
-
-    with open(results_file, "r") as f:
-        results_dict = json.load(f)["results"]
-
-    final_results = {
-        benchmark: v["qem"]
-        for benchmark, v in results_dict.items()
-        if benchmark != "all"
-    }
-
-    return final_results
-
-
-class LightEvalCallback(TrainerCallback):
-    def __init__(self, output_dir, cuda_devices="0,1"):
-        super().__init__()
-        self.cuda_devices = cuda_devices
-        self.output_dir = output_dir
-        self.pending_tasks = []
-        self.checked_checkpoints = []
-
-    def on_save(self, args, state, control, **kwargs):
-        """Called when a checkpoint is saved."""
-        dirs = [d for d in Path(self.output_dir).iterdir() if d.is_dir()]
-        if dirs:
-            last_created_dir = max(dirs, key=lambda d: d.stat().st_ctime)
-            checkpoint_path = os.path.join(self.output_dir, last_created_dir)
-
-
-            shutil.copy("/home/behzad_shomali/modalities/src/modalities/instruction_finetuning/modeling_gpt2.py", checkpoint_path)
-
-            print(f"[LightEvalCallback] Checkpoint saved: {checkpoint_path}")
-        else:
-            print("No directories found in", self.output_dir)
-            checkpoint_path = None
-
-        if checkpoint_path and checkpoint_path not in self.checked_checkpoints:
-            time.sleep(10)
-            # Run evaluation in a separate thread to avoid blocking training
-            thread = threading.Thread(
-                target=self._run_eval_thread, 
-                args=(checkpoint_path, state.global_step)
-            )
-            thread.start()
-            self.pending_tasks.append(thread)
-            self.checked_checkpoints.append(checkpoint_path)
-
-    def _run_eval_thread(self, checkpoint_path, step):
-        """Thread target to run async evaluation safely."""
-        import asyncio
-        try:
-            asyncio.run(self.run_eval(checkpoint_path, step))
-        except Exception as e:
-            print(f"[LightEvalCallback] Evaluation failed for {checkpoint_path}: {e}")
-
-    async def run_eval(self, checkpoint_path, step):
-        print(f"[LightEvalCallback] Starting evaluation for {checkpoint_path}")
-        results = await lighteval_async(
-            cuda_devices=self.cuda_devices,
-            checkpoint_path=checkpoint_path
-        )
-
-        if results is None:
-            print("[LightEvalCallback] Evaluation failed or returned no results.")
-            return
-
-        # Log results to wandb
-        wandb.log({f"lighteval/{k}": v for k, v in results.items()}, step=step)
-        print(f"[LightEvalCallback] Logged results to wandb: {results}")
-
-    def on_train_end(self, args, state, control, **kwargs):
-        """Wait for all pending evaluations before exiting."""
-        if self.pending_tasks:
-            print("[LightEvalCallback] Waiting for all pending evaluations to finish...")
-            for thread in self.pending_tasks:
-                thread.join()
-            print("[LightEvalCallback] All evaluations finished and logged.")
 
 
 def clean_coda_alpaca(raw_data):
@@ -312,3 +217,297 @@ class SavePeftModelCallback(TrainerCallback):
         logging.info(f"LoRA adapter weights saved at: {checkpoint_folder}")
 
         return control
+    
+class WandbOffsetCallback(TrainerCallback):
+    def __init__(self, step_offset=1):
+        super().__init__()
+        self.step_offset = step_offset
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs:
+            wandb.log(logs, step=state.global_step + self.step_offset)
+
+
+
+
+logger = logging.getLogger(__name__)
+
+
+
+def setup_wandb_metrics():
+    """Setup WandB metrics to allow out-of-order logging for evaluation metrics."""
+    if wandb.run is not None:
+        # Define evaluation metrics with step_metric to allow out-of-order logging
+        wandb.define_metric("eval/*", step_metric="eval_step")
+        wandb.define_metric("eval_step")
+        logger.info("✅ WandB metrics configured for out-of-order evaluation logging")
+
+
+def merge_peft_model(peft_path: str, base_model_path: str, output_dir: str) -> bool:
+    """Merge PEFT adapters into base model."""
+    try:
+        logger.info(f"Merging PEFT model: {peft_path} with base: {base_model_path}")
+
+        from peft import PeftModel
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        # Load base model
+        base_model = AutoModelForCausalLM.from_pretrained(
+            base_model_path, torch_dtype="auto", device_map="auto", trust_remote_code=True
+        )
+
+        # Load PEFT adapters
+        model = PeftModel.from_pretrained(base_model, peft_path)
+
+        # Merge adapters
+        merged_model = model.merge_and_unload()
+
+        # Save merged model
+        os.makedirs(output_dir, exist_ok=True)
+        merged_model.save_pretrained(output_dir)
+
+        # Save tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(base_model_path)
+        tokenizer.save_pretrained(output_dir)
+
+        # Copy custom files if they exist
+        for filename in ["modeling_gpt2.py", "configuration_gpt2.py"]:
+            src_file = Path(base_model_path) / filename
+            if src_file.exists():
+                dst_file = Path(output_dir) / filename
+                dst_file.write_text(src_file.read_text())
+                logger.info(f"Copied {filename}")
+
+        logger.info(f"Successfully merged model to: {output_dir}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to merge PEFT model: {e}")
+        return False
+
+
+def run_lighteval_cli(
+    checkpoint_path: str, step: int, eval_gpu: int, source_model_path: str, eval_tasks: str, hf_home: str = "/raid/s3/opengptx/mfrey/huggingface"
+) -> Optional[Dict[str, Any]]:
+    """Run LightEval CLI evaluation and return results."""
+    
+    # This creates a unique lock file for the given id
+    lock_path = f"/tmp/b_lighteval_gpu_{eval_gpu}.lock"
+    gpu_lock = FileLock(lock_path)
+
+    try:
+        logger.info(f"Process for step {step} is WAITING for GPU {eval_gpu} lock...")
+        with gpu_lock: # pause here until the lock is acquired
+            logger.info(f"Process for step {step} has ACQUIRED lock for GPU {eval_gpu}. Starting evaluation.")
+            logger.info(f"Starting CLI evaluation for step {step} on {checkpoint_path}")
+
+            checkpoint_dir = Path(checkpoint_path)
+            eval_model_path = checkpoint_path
+            merged_dir = None
+
+            # Check if it's a PEFT model and merge if needed
+            if os.path.exists(os.path.join(checkpoint_path, "adapter_config.json")):
+                logger.info("PEFT model detected, merging with base model...")
+                merged_dir = os.path.join(checkpoint_path, "lora_merged")
+                if not os.path.exists(merged_dir):
+                    if not merge_lora_adapter(checkpoint_path, source_model_path):
+                        return None
+                else:
+                    logger.info(f"Using existing merged model at {merged_dir}")
+                eval_model_path = merged_dir
+                checkpoint_dir = Path(merged_dir)
+
+            model_args = f"model_name={eval_model_path},use_chat_template=True,trust_remote_code=True"
+            cmd_string = (
+                f"lighteval accelerate "
+                f'"{model_args}" '
+                f'"{eval_tasks}" '
+                f"--max-samples 100 "
+            )
+            env = os.environ.copy()
+            env["CUDA_VISIBLE_DEVICES"] = str(eval_gpu)
+            env["HF_HOME"] = hf_home
+            logger.info(f"Running command: CUDA_VISIBLE_DEVICES={eval_gpu} {cmd_string}")
+
+            result = subprocess.run(
+                cmd_string,
+                shell=True,
+                env=env,
+                capture_output=False,
+                text=True,
+                check=False,
+                preexec_fn=os.setsid,
+                cwd=os.getcwd(),
+            )
+
+            if result.returncode != 0:
+                logger.error(f"Evaluation failed for step {step}")
+                logger.error(f"STDOUT: {result.stdout}")
+                logger.error(f"STDERR: {result.stderr}")
+                return None
+
+            logger.info(f"CLI evaluation completed for step {step}")
+            json_files = list(checkpoint_dir.glob("results_*.json"))
+            if not json_files:
+                logger.error(f"No results JSON file found in {checkpoint_dir}")
+
+                home_dir = str(Path.home())
+                possible_dir = Path(os.path.join(home_dir, "results/results", *source_model_path.split("/")))
+                logger.info(f"Start looking into: {possible_dir}")
+                
+                json_files = list(possible_dir.glob("results_*.json"))
+                if not json_files:
+                    logger.error(f"Still no results JSON file found in {possible_dir}")
+                    return None
+
+            results_file = max(json_files, key=lambda p: p.stat().st_mtime)
+            logger.info(f"Reading results from {results_file}")
+            with open(results_file, "r") as f:
+                eval_results = json.load(f)
+
+            # The lock is automatically released when the 'with' block exits.
+            logger.info(f"Process for step {step} has RELEASED lock for GPU {eval_gpu}.")
+            return eval_results
+
+    except Exception as e:
+        logger.error(f"Evaluation failed for step {step}: {e}")
+        return None
+
+
+def parse_and_log_results(eval_results: Dict[str, Any], step: int) -> Dict[str, float]:
+    """Parse LightEval results and log to WandB."""
+    if not eval_results or "results" not in eval_results:
+        logger.error(f"❌ No valid results to log for step {step}")
+        return {}
+
+    results_to_log = {}
+    # Parse individual task results
+    for task_name, metrics in eval_results["results"].items():
+        if task_name == "all":  # Skip the aggregated results
+            continue
+
+        # Clean up task name for logging
+        clean_task_name = task_name.replace("leaderboard|", "").split("|")[0]
+        for metric_name, value in metrics.items():
+            log_key = f"eval/{clean_task_name}_{metric_name}"
+            results_to_log[log_key] = value
+
+    # Log to WandB if available - include eval_step for out-of-order logging
+    if results_to_log and wandb.run is not None:
+        # Add the eval_step to the metrics
+        results_to_log["eval_step"] = step
+        # Log without specifying step parameter!
+        wandb.log(results_to_log)
+        logger.info(f"📊 Logged {len(results_to_log)} metrics to WandB for eval_step {step}")
+        for key, value in results_to_log.items():
+            if key != "eval_step":
+                logger.info(f"  {key}: {value}")
+    else:
+        logger.warning(f"❌ No metrics to log for step {step}")
+
+    return results_to_log
+
+
+class AsyncEvaluator:
+    """Asynchronous evaluator for running evaluations in background."""
+
+    def __init__(
+            self, 
+            max_workers: int, 
+            eval_gpu: int, 
+            source_model_path: str, 
+            eval_tasks: str,
+            hf_home: str = "/raid/s3/opengptx/mfrey/huggingface"
+        ):
+        self.hf_home = hf_home
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self.futures = []
+        self.eval_gpu = eval_gpu
+        self.source_model_path = source_model_path
+        self.eval_tasks = eval_tasks
+
+        # Setup WandB metrics when evaluator is created
+        setup_wandb_metrics()
+
+    def submit_evaluation(self, checkpoint_path: str, step: int):
+        """Submit an evaluation job."""
+
+        def eval_and_log(eval_step, eval_checkpoint_path):
+            results = run_lighteval_cli(eval_checkpoint_path, eval_step, self.eval_gpu, self.source_model_path, self.eval_tasks, self.hf_home)
+            if results:
+                return parse_and_log_results(results, eval_step)
+            return {}
+
+        future = self.executor.submit(eval_and_log, step, checkpoint_path)  # Pass explicitly
+        self.futures.append((future, step))
+
+        # Clean up completed futures
+        self.futures = [(f, s) for f, s in self.futures if not f.done()]
+
+        logger.info(f"🎯 Evaluation job submitted for step {step}")
+
+    def wait_for_completion(self):
+        """Wait for all evaluations to complete."""
+        if self.futures:
+            logger.info("⏳ Waiting for remaining evaluations to complete...")
+            for future, step in self.futures:
+                try:
+                    future.result()
+                    logger.info(f"✅ Evaluation completed for step {step}")
+                except Exception as e:
+                    logger.error(f"❌ Evaluation failed for step {step}: {e}")
+
+        self.executor.shutdown(wait=True)
+        logger.info("✅ All evaluations completed")
+
+    def get_completed_results(self) -> List[tuple]:
+        """Get results from completed evaluations."""
+        completed = []
+        remaining = []
+
+        for future, step in self.futures:
+            if future.done():
+                try:
+                    result = future.result()
+                    completed.append((step, result))
+                except Exception as e:
+                    logger.error(f"Error getting result for step {step}: {e}")
+                    completed.append((step, None))
+            else:
+                remaining.append((future, step))
+
+        self.futures = remaining
+        return completed
+    
+class EvalCallback(TrainerCallback):
+    """Callback to trigger async LightEval CLI on checkpoint saves and at training start."""
+
+    def __init__(self, eval_gpu: int, source_model_path: str, hf_home: str):
+        self.eval_gpu = eval_gpu
+        self.source_model_path = source_model_path
+        self.hf_home = hf_home
+        self.evaluator = AsyncEvaluator(
+            max_workers=1,  
+            eval_gpu=eval_gpu, 
+            source_model_path=source_model_path,
+            eval_tasks="leaderboard|gsm8k|8|1,leaderboard|hellaswag|5|1",
+            hf_home=hf_home,
+        )
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        """Run initial evaluation on the base model at step 0."""
+        logger.info("🔍 Running initial evaluation on base model at step 0...")
+        self.evaluator.submit_evaluation(self.source_model_path, step=0)
+
+    def on_save(self, args, state, control, **kwargs):
+        """Trigger evaluation when checkpoint is saved."""
+        checkpoint_path = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+        if os.path.exists(checkpoint_path):
+            logger.info(f"💾 Checkpoint saved at step {state.global_step}, triggering evaluation...")
+            self.evaluator.submit_evaluation(checkpoint_path, state.global_step)
+        else:
+            logger.warning(f"⚠️ Checkpoint path {checkpoint_path} does not exist, skipping evaluation")
+
+    def on_train_end(self, args, state, control, **kwargs):
+        """Wait for all evaluations to complete."""
+        self.evaluator.wait_for_completion()
