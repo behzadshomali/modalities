@@ -890,7 +890,11 @@ class GPT2LLM(NNModel):
             del state_dict["lm_head.weight"]
         return super().load_state_dict(state_dict, strict=strict, assign=assign)
     
-    def forward_impl(self, inputs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    def forward_impl(
+        self, 
+        inputs: dict[str, torch.Tensor],
+        inputs_embeds: Optional[torch.Tensor] = None,
+    ) -> dict[str, torch.Tensor]:
         """
         Forward pass implementation of the GPT2LLM module.
 
@@ -908,9 +912,15 @@ class GPT2LLM(NNModel):
         assert t <= self.sequence_length, f"Cannot forward sequence of length {t}, the model's maximum "
         f"input sequence length is only {self.sequence_length}"
 
-        # forward the GPT model itself
-        tok_emb = self.transformer.wte(input_ids)  # token embeddings of shape (b, t, n_embd)
+        # if inputs_embeds is not None:
+        #     logger.warning("`inputs_embeds` is not None. Therefore `input_ids` will be ignored.")
 
+        # forward the GPT model itself
+        if inputs_embeds is not None:
+            tok_emb = inputs_embeds
+        else:
+            tok_emb = self.transformer.wte(input_ids)  # token embeddings of shape (b, t, n_embd)
+        
         if self.poe_type is PositionTypes.ABSOLUTE:
             pos = torch.arange(0, t, dtype=torch.long, device=device)  # shape (t)
             pos_emb = self.transformer.wpe(pos)  # position embeddings of shape (t, n_embd)
@@ -925,7 +935,11 @@ class GPT2LLM(NNModel):
         logits = self.transformer.lm_head(x)
         return {self.prediction_key: logits}
 
-    def forward(self, inputs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    def forward(
+        self, 
+        inputs: dict[str, torch.Tensor],
+        inputs_embeds: Optional[torch.Tensor] = None
+    ) -> dict[str, torch.Tensor]:
         """
         Forward pass of the GPT2LLM module.
 
@@ -937,7 +951,7 @@ class GPT2LLM(NNModel):
             dict[str, torch.Tensor]: A dictionary containing output tensors.
                 - prediction_key (str): Key for the output tensor containing logits.
         """
-        return self.forward_impl(inputs)
+        return self.forward_impl(inputs, inputs_embeds)
 
 
 def manual_scaled_dot_product_attention(

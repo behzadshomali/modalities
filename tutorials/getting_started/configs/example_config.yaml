@@ -60,14 +60,14 @@ collate_fn:
 
 train_dataset:
   component_key: dataset
-  # variant_key: packed_mem_map_dataset_continuous
-  # config:
-  #   raw_data_path: ${settings.paths.train_dataset_path}
-  #   sequence_length: ${settings.step_profile.sequence_length}
-  #   sample_key:  ${settings.referencing_keys.sample_key}
-  variant_key: combined
+  variant_key: packed_mem_map_dataset_continuous
   config:
-    datasets: none
+    raw_data_path: ${settings.paths.train_dataset_path}
+    sequence_length: ${settings.step_profile.sequence_length}
+    sample_key:  ${settings.referencing_keys.sample_key}
+  # variant_key: combined
+  # config:
+  #   datasets: none
 
 
 train_dataloader:
@@ -308,7 +308,7 @@ evaluation_subscriber:
   config:
     global_rank: ${settings.cuda_env.global_rank}
     project: modalities_getting_started
-    mode: OFFLINE
+    mode: ONLINE
     experiment_id: ${settings.experiment_id}
     directory: data/wandb_storage
     config_file_path: ${settings.config_file_path}
