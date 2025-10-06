@@ -17,14 +17,14 @@ settings:
   intervals:
     training_log_interval_in_steps: 10
     checkpointing_interval_in_steps: 1000000000
-    evaluation_interval_in_steps: 50
+    evaluation_interval_in_steps: 200
   consistency_enforcement:
     enforce_tokens_per_step_consistency: true
     enforce_last_step_logged: false
     enforce_last_step_evaluated: false
     enforce_last_step_checkpointed: false
   step_profile:
-    gradient_accumulation_steps: 16
+    gradient_accumulation_steps: 2
     local_train_micro_batch_size: 16
     sequence_length: 1024
   training_target: 
@@ -212,8 +212,9 @@ pondering_model:
     seed: 2000
     softmax_temperature: 1.0
     apply_embed_scale: true
+    inverse_scale: true
     grad_checkpointing: true
-    topk: 100
+    topk: -1
     base_model:
       instance_key: base_normal_model
       pass_type: BY_REFERENCE
@@ -295,7 +296,7 @@ lr_scheduler:
     div_factor: 10
     final_div_factor: 1
     total_steps: ${settings.training_target.num_target_steps}
-    pct_start: 0.05
+    pct_start: 0.01
     anneal_strategy: cos
     last_epoch: ${settings.training_progress.last_step}
 
@@ -304,7 +305,7 @@ optimizer:
   component_key: optimizer
   variant_key: adam_w
   config:
-    lr: 0.0002
+    lr: 3e-4
     betas: [0.9, 0.95]
     eps: 1e-8
     weight_decay: 1e-1
