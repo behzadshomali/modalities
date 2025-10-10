@@ -49,6 +49,7 @@ from modalities.training.activation_checkpointing.activation_checkpointing_varia
 )
 from modalities.util import get_local_number_of_trainable_parameters, get_module_class_from_name
 from modalities.utils.logger_utils import get_logger
+from modalities.pondering_lm.custom_modules import PonderingModelForCausalLM
 
 logger = get_logger("model_factory")
 
@@ -543,6 +544,37 @@ class ModelFactory:
 
         return model
 
+    @staticmethod
+    def get_pondering_model(
+        base_model: nn.Module,
+        pondering_steps: int,
+        softmax_temperature: float,
+        apply_embed_scale: bool,
+        inverse_scale: bool,
+        grad_checkpointing: bool,
+        topk: int,
+        use_meta_device: Optional[bool] = False,
+        seed: int = None,
+    ):
+        
+
+        config = dict(
+            base_model=base_model,
+            pondering_steps=pondering_steps,
+            seed=seed,
+            softmax_temperature=softmax_temperature,
+            apply_embed_scale=apply_embed_scale,
+            inverse_scale=inverse_scale,
+            grad_checkpointing=grad_checkpointing,
+            topk=topk
+        )
+        
+        if use_meta_device:
+            with torch.device("meta"):
+                model = PonderingModelForCausalLM(**config)
+        else:
+            model = PonderingModelForCausalLM(**config)
+        return model
 
 class GPT2ModelFactory:
     @staticmethod

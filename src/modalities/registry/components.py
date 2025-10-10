@@ -120,6 +120,7 @@ from modalities.utils.number_conversion import (
     NumTokensFromPackedMemMapDatasetContinuousConfig,
 )
 from modalities.utils.profilers.batch_generator import RandomDatasetBatchGenerator, RandomDatasetBatchGeneratorConfig
+from modalities.pondering_lm.custom_modules import PonderingModelConfig
 
 
 @dataclass
@@ -144,6 +145,7 @@ class ComponentEntity:
 
 COMPONENTS = [
     # models
+    ComponentEntity("model", "custom_pondering_llama", ModelFactory.get_pondering_model, PonderingModelConfig),
     ComponentEntity("model", "gpt2", GPT2ModelFactory.get_gpt2_model, GPT2LLMConfig),
     ComponentEntity("model", "gpt2_tp", GPT2ModelFactory.get_gpt2_tensor_parallelized_model, GPT2ModelTPConfig),
     ComponentEntity(
