@@ -888,6 +888,9 @@ class GPT2LLM(NNModel):
         if "lm_head.weight" in state_dict:
             state_dict["transformer.lm_head.weight"] = state_dict["lm_head.weight"]
             del state_dict["lm_head.weight"]
+
+        # the format used for some pondering models
+        state_dict = {k.replace("model.base_model.", ""): v for k, v in state_dict.items()}
         return super().load_state_dict(state_dict, strict=strict, assign=assign)
     
     def forward_impl(

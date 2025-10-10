@@ -58,7 +58,12 @@ def convert_model_checkpoint(config: Dict) -> Tuple[PonderingModelForCausalLM, t
     
     # Extract base model config
     # base_model = modalities_model
-    base_model = modalities_model.model.base_model
+    if hasattr(modalities_model, "model"):
+        # where the model is of type PonderingForCausalLM
+        base_model = modalities_model.model.base_model
+    else:
+        # where the model is of type GPT2LLM
+        base_model = modalities_model
     base_model_config = _extract_base_model_config(base_model, config['model_raw']['config'])
     
     # Create pondering config
@@ -96,7 +101,12 @@ def convert_model_checkpoint(config: Dict) -> Tuple[PonderingModelForCausalLM, t
     logger.info("Creating HuggingFace model...")
     hf_model = PonderingModelForCausalLM(pondering_config).to(dtype=torch.bfloat16)
 
-    _copy_weights_model(hf_model.inner_model, modalities_model.model.base_model)
+    if hasattr(modalities_model, "model"):
+        # where the model is of type PonderingForCausalLM
+        _copy_weights_model(hf_model.inner_model, modalities_model.model.base_model)
+    else:
+        # where the model is of type GPT2LLM
+        _copy_weights_model(hf_model.inner_model, modalities_model)
 
 
     # # Convert state dict
@@ -198,15 +208,24 @@ def check_converted_model(
         # Generate random input
         batch_size = 2
         # get the model's maximum sequence length
-        seq_len = modalities_model.model.base_model.sequence_length
+        if hasattr(modalities_model, "model"):
+            # where the model is of type PonderingForCausalLM
+            seq_len = modalities_model.model.base_model.sequence_length
+        else:
+            # where the model is of type GPT2LLM
+            seq_len = modalities_model.sequence_length            
         input_ids = torch.randint(0, vocab_size, (batch_size, seq_len))
-        inputs = {modalities_model.model.base_model.sample_key: input_ids.to(modalities_model.model.base_model.transformer.wte.weight.device)}
         
+        sample_key = modalities_model.model.base_model.sample_key if hasattr(modalities_model, "model") else modalities_model.sample_key
+        device = modalities_model.model.base_model.transformer.wte.weight.device if hasattr(modalities_model, "model") else modalities_model.transformer.wte.weight.device
+        inputs = {sample_key: input_ids.to(device)}
+
+        prediction_key = modalities_model.model.base_model.prediction_key if hasattr(modalities_model, "model") else modalities_model.prediction_key
         # Get outputs from both models
         with torch.no_grad():
             # Modalities model
-            modalities_logits = modalities_model(inputs)[modalities_model.model.base_model.prediction_key].to("cpu")
-            
+            modalities_logits = modalities_model(inputs)[prediction_key].to("cpu")
+
             # HF model
             hf_output = hf_model(inputs)
             hf_logits = hf_output['logits'].to("cpu")
