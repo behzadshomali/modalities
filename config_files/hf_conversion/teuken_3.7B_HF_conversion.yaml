@@ -89,12 +89,12 @@ settings:
     target_key: target_ids
     prediction_key: logits
   # step_profile:
-  gradient_accumulation_steps: 1
-  local_train_micro_batch_size: 2
+  gradient_accumulation_steps: 5
+  local_train_micro_batch_size: 3
   sequence_length: 1024
-  training_target:
-    num_target_tokens: 3752534736896
-    num_target_steps: 447337
+  # training_target:
+  #   num_target_tokens: 3752534736896
+  #   num_target_steps: 447337
   training_progress:
     global_num_seen_tokens: 0
     num_seen_steps: 0
@@ -1994,6 +1994,7 @@ gradient_clipper:
       pass_type: BY_REFERENCE
     norm_type: P2_NORM
     max_norm: 1.0
+
 fsdp_model:
   component_key: model
   variant_key: fsdp_wrapped

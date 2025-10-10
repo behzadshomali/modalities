@@ -1,0 +1,176 @@
+loss_fn:
+  component_key: loss
+  variant_key: clm_cross_entropy_loss
+  config:
+    target_key: ${settings.referencing_keys.target_key}
+    prediction_key: ${settings.referencing_keys.prediction_key}
+
+app_state:
+  component_key: app_state
+  variant_key: raw
+  config:
+    model: 
+      instance_key: wrapped_model
+      pass_type: BY_REFERENCE
+    optimizer:
+      instance_key: optimizer
+      pass_type: BY_REFERENCE
+    lr_scheduler:
+      instance_key: lr_scheduler
+      pass_type: BY_REFERENCE
+
+wrapped_model:
+  component_key: model
+  variant_key: fsdp1_wrapped
+  config:
+    model:
+      instance_key: pondering_model
+      pass_type: BY_REFERENCE
+    sync_module_states: true
+    mixed_precision_settings: BF_16
+    sharding_strategy: FULL_SHARD
+    block_names: [GPT2Block]
+
+pondering_model:
+  component_key: model
+  variant_key: custom_pondering_llama
+  config:
+    pondering_steps: ${settings.pondering_steps}
+    seed: 2000
+    softmax_temperature: 1.0
+    apply_embed_scale: true
+    inverse_scale: true
+    grad_checkpointing: true
+    topk: 100
+    base_model:
+      instance_key: base_normal_model
+      pass_type: BY_REFERENCE
+    
+base_normal_model:
+  component_key: model
+  variant_key: model_initialized
+  config:
+    model:
+      instance_key: model_raw
+      pass_type: BY_REFERENCE
+    model_initializer:
+      component_key: model_initialization
+      variant_key: composed
+      config:
+        model_type: gpt2
+        weight_init_type: scaled
+        mean: 0.0
+        std: 0.02
+        num_layers: ${model_raw.config.n_layer}
+
+model_raw:
+  component_key: model
+  variant_key: gpt2
+  config:
+    sample_key: ${settings.referencing_keys.sample_key}
+    poe_type: NOPE
+    sequence_length: ${settings.step_profile.sequence_length}
+    prediction_key: ${loss_fn.config.prediction_key}
+    vocab_size: 251008 
+    # Eurolingua vocab size of 250880, padded up to nearest multiple of 64 for efficiency (250944),
+    # which runs into "Value error, vocab_size with value 250944 should be divisible by 128 for efficient training." 
+    # so we use 251008
+    n_layer: 24
+    n_head_q: 16
+    n_head_kv: 16
+    ffn_hidden: 1024
+    n_embd: 1024
+    dropout: 0.0
+    bias: false
+    attention_config:
+      qkv_transforms:
+        - type_hint: RotaryTransform
+          config:
+            n_embd: ${model_raw.config.n_embd}
+            n_head: ${model_raw.config.n_head_q} #it has to be head_q here
+            seq_length_dim: -2
+            base_freq: 10000
+    attention_implementation: manual
+    activation_type: swiglu
+    attention_norm_config:
+      norm_type: layer_norm
+      config:
+        normalized_shape: ${model_raw.config.n_embd}
+        eps: 1.0e-05
+    ffn_norm_config:
+      norm_type: layer_norm
+      config:
+        normalized_shape: ${model_raw.config.n_embd}
+        eps: 1.0e-05
+    lm_head_norm_config:
+      norm_type: layer_norm
+      config:
+        normalized_shape: ${model_raw.config.n_embd}
+        eps: 1.0e-05
+    use_weight_tying: false
+
+
+optimizer:
+  component_key: optimizer
+  variant_key: adam_w
+  config:
+    lr: 3e-4
+    betas: [0.9, 0.95]
+    eps: 1e-8
+    weight_decay: 1e-1
+    weight_decay_groups_excluded: [embedding, layernorm]
+    wrapped_model: 
+      instance_key: wrapped_model
+      pass_type: BY_REFERENCE
+
+gradient_clipper:
+  component_key: gradient_clipper
+  variant_key: fsdp1
+  config:
+    wrapped_model:
+      instance_key: wrapped_model
+      pass_type: BY_REFERENCE
+    norm_type: P2_NORM
+    max_norm: 1.0
+
+
+tokenizer:
+  component_key: tokenizer
+  variant_key: pretrained_sp_tokenizer
+  config:
+    tokenizer_model_file: /raid/s3/opengptx/behzad_shomali/modalities/Eurolingua_tokenizer/tokenizer.model
+
+
+checkpointed_model:
+  component_key: model
+  variant_key: fsdp1_checkpointed
+  config: 
+    checkpoint_loading:
+      component_key: checkpoint_loading
+      variant_key: torch
+      config:
+        device: ${settings.device}
+        precision: BF16
+    model:
+      instance_key: pondering_model
+      pass_type: BY_REFERENCE
+    checkpoint_path: ${settings.model_path}
+
+settings:
+  pondering_steps: 3
+  device: 0
+  model_path: /raid/s3/opengptx/behzad_shomali/checkpoints/2025-10-07__14-48-42_64ab0eb2/eid_2025-10-07__14-48-42_64ab0eb2-model-seen_steps_22000-seen_tokens_1441792000-target_steps_88985-target_tokens_5831720960.bin
+  config_file_path: ${modalities_env:config_file_path}
+  referencing_keys:
+    sample_key: input_ids
+    target_key: target_ids
+    prediction_key: logits
+  gradient_accumulation_steps: 5
+  local_train_micro_batch_size: 3
+  step_profile:
+    sequence_length: 1024
+  training_progress:
+    global_num_seen_tokens: 0
+    num_seen_steps: 0
+    num_seen_samples: 0
+    last_step: -1
