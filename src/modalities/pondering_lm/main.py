@@ -29,7 +29,7 @@ def main():
     # # change to cwd
     # os.chdir(cwd)
     # config_file_path = cwd / Path("config_lorem_ipsum.yaml")
-    config_file_path = Path("/raid/s3/opengptx/behzad_shomali/modalities/config_files/training/fineweb2_edu_pondering.yaml")
+    config_file_path = Path("/raid/s3/opengptx/behzad_shomali/modalities/config_files/training/fineweb2_edu_pondering_pythia.yaml")
 
     with CudaEnv(process_group_backend=ProcessGroupBackendType.nccl):
         # instantiate the Main entrypoint of modalities by passing in the config path

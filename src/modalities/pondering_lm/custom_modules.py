@@ -60,15 +60,6 @@ class PonderingModelForCausalLM(NNModel):
             grad_checkpointing=grad_checkpointing,
             topk=topk
         )
-        
-    # def _init_base_model(self, base_config: Dict[str, Any]) -> nn.Module:
-    #     """Initialize base model from config."""
-    #     # In real implementation, this would load the model
-    #     # based on the Modalities configuration
-    #     from transformers import AutoModelForCausalLM
-    #     model = AutoModelForCausalLM.from_pretrained(base_config["model_name"])
-        
-    #     return model
     
     def forward(
         self,
