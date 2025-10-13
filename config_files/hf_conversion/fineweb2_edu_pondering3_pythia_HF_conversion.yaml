@@ -159,7 +159,7 @@ checkpointed_model:
 settings:
   pondering_steps: 3
   device: 0
-  model_path: /raid/s3/opengptx/behzad_shomali/checkpoints/2025-10-07__14-48-42_64ab0eb2/eid_2025-10-07__14-48-42_64ab0eb2-model-seen_steps_22000-seen_tokens_1441792000-target_steps_88985-target_tokens_5831720960.bin
+  model_path: /raid/s3/opengptx/behzad_shomali/checkpoints/2025-10-07__14-48-42_64ab0eb2/eid_2025-10-07__14-48-42_64ab0eb2-model-seen_steps_88000-seen_tokens_5767168000-target_steps_88985-target_tokens_5831720960.bin
   config_file_path: ${modalities_env:config_file_path}
   referencing_keys:
     sample_key: input_ids

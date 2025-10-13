@@ -1,4 +1,4 @@
-eval_device: 5
+eval_device: 2
 datasets:
 - instruction_col: problem
   is_in_HF: true
@@ -15,7 +15,7 @@ datasets:
   weight: 1
 learn_embed: true
 learn_normalization: true
-model_name: /raid/s3/opengptx/behzad_shomali/hf_converted/fineweb2_edu_pondering3_pythia/2025-10-07__14-48-42_64ab0eb2-88000/
+model_name: /raid/s3/opengptx/behzad_shomali/hf_converted/fineweb2_edu_pondering0_pythia/
 new_cache_dir: /raid/s3/opengptx/behzad_shomali/custom_hf_cache/
 preprocess_function: format_openmathinstruct2
 random_seed: 2000
@@ -23,7 +23,7 @@ sft:
   assistant_only_loss: false
   bf16: true
   completion_only_loss: false
-  # dataloader_num_workers: 2
+  dataloader_num_workers: 2
   disable_tqdm: false
   do_eval: true
   eval_accumulation_steps: 1
@@ -45,8 +45,8 @@ sft:
   optim: paged_adamw_8bit
   output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/Llama32_OpenMathInstruct-2/
   packing: true
-  per_device_eval_batch_size: 16
-  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 8
+  per_device_train_batch_size: 1
   push_to_hub: false
   report_to: wandb
   save_only_model: true
@@ -56,8 +56,8 @@ sft:
   use_liger_kernel: false
   warmup_ratio: 0.1
   weight_decay: 0.1
-  save_total_limit: 10
-train_size: 99000
-val_size: 1000
+  save_total_limit: 30
+train_size: 990
+val_size: 100
 wandb:
   project: Pondering_IT_OpenMathInstruct-2
