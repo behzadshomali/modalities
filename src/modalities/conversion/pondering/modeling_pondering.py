@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 from transformers import PreTrainedModel
-from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from transformers.generation import GenerationMixin
 
 
@@ -16,240 +16,6 @@ from transformers.generation import GenerationMixin
 from modalities.conversion.gpt2.modeling_gpt2 import GPT2ForCausalLM, GPT2Model
 from modalities.conversion.pondering.configuration_pondering import PonderingModelConfig
 
-from modalities.conversion.gpt2.configuration_gpt2 import GPT2Config
-from modalities.conversion.gpt2.conversion_model import _get_layer_norm_value, _map_attention_type
-from modalities.models.model import SwiGLU
-
-
-class PonderingPreTrainedModel(PreTrainedModel):
-    """
-    An abstract class to handle weights initialization and a simple interface for downloading and loading pretrained
-    models.
-    """
-    
-    config_class = PonderingModelConfig
-    base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["GPT2DecoderLayer"]
-    _skip_keys_device_placement = ["past_key_values"]
-
-
-class PonderingModel(PonderingPreTrainedModel):
-    """
-    Pondering wrapper around a base model.
-    
-    This model performs multiple pondering iterations over embeddings before
-    passing them to the base model.
-    """
-    
-    def __init__(self, config: PonderingModelConfig, base_model):
-        super().__init__(config)
-        self.config = config
-        
-        self.base_model = base_model
-        
-        # Pondering parameters
-        self.pondering_steps = config.pondering_steps
-        self.softmax_temperature = config.softmax_temperature
-        self.apply_embed_scale = config.apply_embed_scale
-        self.inverse_scale = config.inverse_scale
-        self.gradient_checkpointing = config.grad_checkpointing
-        self.topk = config.topk
-        
-        # Initialize weights
-        self.post_init()
-
-    def get_base_model_embeddings(self):
-        if hasattr(self.base_model, 'get_input_embeddings'):
-            return self.base_model.get_input_embeddings().weight
-        else:
-            # Fallback for GPT2LLM style models
-            return self.base_model.transformer['wte'].weight
-    
-    def get_input_embeddings(self):
-        return self.get_base_model_embeddings()
-    
-    def set_input_embeddings(self, value):
-        self.base_model.transformer['wte'] = value
-    
-    def _compute_embed_scale(self, embedding_dim: int, dtype: torch.dtype) -> torch.Tensor:
-        """Compute embedding scale factor."""
-        if not self.apply_embed_scale:
-            return torch.tensor(1.0, dtype=dtype)
-        
-        scale = torch.sqrt(torch.tensor(embedding_dim, dtype=dtype))
-        if self.inverse_scale:
-            return 1.0 / scale
-        return scale
-    
-    def _pondering_step(
-        self,
-        embedding: torch.Tensor,
-        input_ids: torch.Tensor,
-        embed_scale: torch.Tensor,
-        **kwargs
-    ) -> torch.Tensor:
-        """
-        Perform one pondering iteration.
-        
-        Args:
-            embedding: Current embeddings [batch_size, seq_len, hidden_size]
-            input_ids: Original input IDs (for passing to base model)
-            embed_scale: Scaling factor for embeddings
-            **kwargs: Additional arguments for base model
-            
-        Returns:
-            Updated embeddings after one pondering step
-        """
-        logits = self.base_model(
-            inputs=input_ids,
-            inputs_embeds=embedding, 
-            **kwargs
-        )["logits"]
-        
-
-        if self.topk > 0:
-            # Top-K optimization
-            top_k_logits, top_k_indices = torch.topk(
-                logits, 
-                k=self.topk, 
-                dim=-1
-            )  # [batch_size, seq_len, K]
-            
-            top_k_probs = torch.softmax(top_k_logits / self.softmax_temperature, dim=-1)  # [batch_size, seq_len, K]
-            
-            # Gather embeddings for top-K tokens
-            embeddings = self.get_base_model_embeddings()  # [vocab_size, embed_dim]
-            top_k_embeds = embeddings[top_k_indices]  # [batch_size, seq_len, K, embed_dim]
-            
-            # Weighted sum of top-K embeddings
-            interpolated_embeds = torch.einsum(
-                'bsk,bske->bse', 
-                top_k_probs, 
-                top_k_embeds * self.embed_scale
-            )  # [batch_size, seq_len, embed_dim]
-        else:
-            # Full vocabulary (original implementation)
-            probs = torch.softmax(logits / self.softmax_temperature, dim=-1)
-            interpolated_embeds = torch.matmul(probs, self.get_base_model_embeddings() * self.embed_scale)
-        
-        return embedding + interpolated_embeds
-    
-    def forward(
-        self,
-        input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        labels: Optional[torch.LongTensor] = None,
-        return_dict: Optional[bool] = None,
-        **kwargs,
-    ) -> Union[Tuple, CausalLMOutputWithPast]:
-        """
-        Forward pass for causal language modeling.
-        
-        Args:
-            input_ids: Input token IDs [batch_size, seq_len]
-            attention_mask: Attention mask [batch_size, seq_len]
-            position_ids: Position IDs [batch_size, seq_len]
-            past_key_values: Past key-value cache
-            inputs_embeds: Pre-computed embeddings
-            labels: Labels for computing loss [batch_size, seq_len]
-            use_cache: Whether to use KV cache
-            output_attentions: Whether to output attention weights
-            output_hidden_states: Whether to output hidden states
-            return_dict: Whether to return a dict
-            
-        Returns:
-            CausalLMOutputWithPast or tuple
-        """
-        input_embedding = self.get_base_model_embeddings()[input_ids["input_ids"]]
-
-        if self.apply_embed_scale is not None:
-            if self.inverse_scale:
-                self.embed_scale = 1 / torch.sqrt(torch.tensor(input_embedding.shape[-1], dtype=input_embedding.dtype))
-            else:
-                self.embed_scale = torch.sqrt(torch.tensor(input_embedding.shape[-1], dtype=input_embedding.dtype))
-        else:
-            self.embed_scale = torch.tensor(1.0)
-        
-        for _ in range(self.pondering_steps):
-            if self.grad_checkpointing:
-                input_embedding = checkpoint(self._pondering_step, input_embedding, use_reentrant=False)
-            else:
-                input_embedding = self._pondering_step(input_embedding)
-
-
-        # Continue with base model forward pass
-        outputs = self.base_model(
-            inputs=input_ids,
-            inputs_embeds=input_embedding,
-            **kwargs
-        )
-        
-        loss = None
-        if labels is not None:
-            loss = self.loss_function(logits=outputs.logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
-        
-        
-        return CausalLMOutputWithPast(
-            loss=loss,
-            logits=outputs.logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states if output_hidden_states else None,
-            attentions=outputs.attentions if output_attentions else None,
-        )
-    
-    def prepare_inputs_for_generation(
-        self,
-        input_ids,
-        past_key_values=None,
-        attention_mask=None,
-        inputs_embeds=None,
-        **kwargs
-    ):
-        """Prepare inputs for generation."""
-        if past_key_values is not None:
-            # Only use the last token if we have past_key_values
-            input_ids = input_ids[:, -1:]
-        
-        position_ids = kwargs.get("position_ids", None)
-        if attention_mask is not None and position_ids is None:
-            # Create position_ids on the fly for batch generation
-            position_ids = attention_mask.long().cumsum(-1) - 1
-            position_ids.masked_fill_(attention_mask == 0, 1)
-            if past_key_values:
-                position_ids = position_ids[:, -1].unsqueeze(-1)
-        
-        # If `inputs_embeds` are passed, we only want to use them in the 1st generation step
-        if inputs_embeds is not None and past_key_values is None:
-            model_inputs = {"inputs_embeds": inputs_embeds}
-        else:
-            model_inputs = {"input_ids": input_ids}
-        
-        model_inputs.update(
-            {
-                "position_ids": position_ids,
-                "past_key_values": past_key_values,
-                "use_cache": kwargs.get("use_cache"),
-                "attention_mask": attention_mask,
-            }
-        )
-        return model_inputs
-    
-    @staticmethod
-    def _reorder_cache(past_key_values, beam_idx):
-        """Reorder cache for beam search."""
-        reordered_past = ()
-        for layer_past in past_key_values:
-            reordered_past += (
-                tuple(past_state.index_select(0, beam_idx) for past_state in layer_past),
-            )
-        return reordered_past
 
 
 __all__ = [
@@ -260,6 +26,58 @@ __all__ = [
 ]
 
 
+
+import torch
+import torch.nn as nn
+from typing import Optional, Dict, Tuple
+from transformers import PreTrainedModel, PretrainedConfig
+from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.generation import GenerationMixin
+from modalities.conversion.gpt2.modeling_gpt2 import GPT2DecoderLayer, GPT2ForCausalLM, GPT2Model
+from modalities.conversion.gpt2.configuration_gpt2 import GPT2Config
+from modalities.conversion.gpt2.conversion_model import _get_layer_norm_value, _map_attention_type
+from modalities.models.model import SwiGLU
+
+from typing import Annotated
+
+
+class PonderingModelConfig(PretrainedConfig):
+    """
+    HuggingFace-compatible configuration for PonderingModel.
+    
+    Args:
+        base_model_config: Config dict for the base model
+        pondering_steps: Number of pondering iterations
+        topk: Top-K sampling for efficiency (-1 for full vocab)
+        softmax_temperature: Temperature for softmax in pondering
+        apply_embed_scale: Whether to apply embedding scaling
+        inverse_scale: Use inverse square root scaling
+        grad_checkpointing: Enable gradient checkpointing
+    """
+    model_type = "pondering"
+    is_composition = False
+    
+    def __init__(
+        self,
+        base_model_config: Optional[Dict] = None,
+        base_model_type: str = "gpt2",
+        pondering_steps: int = 3,
+        topk: int = -1,
+        softmax_temperature: float = 1.0,
+        apply_embed_scale: bool = False,
+        inverse_scale: bool = False,
+        grad_checkpointing: bool = True,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.inner_model_config = base_model_config or {}
+        self.inner_model_type = base_model_type
+        self.pondering_steps = pondering_steps
+        self.topk = topk
+        self.softmax_temperature = softmax_temperature
+        self.apply_embed_scale = apply_embed_scale
+        self.inverse_scale = inverse_scale
+        self.grad_checkpointing = grad_checkpointing
 
 
 class PonderingModelForCausalLM(PreTrainedModel, GenerationMixin):
@@ -463,7 +281,7 @@ class PonderingModelForCausalLM(PreTrainedModel, GenerationMixin):
                 inputs_embeds = self._pondering_step(input_ids, inputs_embeds, attention_mask)
         
         # Final forward pass through base model
-        outputs = self.inner_model(
+        outputs: BaseModelOutputWithPast = self.inner_model(
             inputs=input_ids,
             inputs_embeds=inputs_embeds,
             # attention_mask=attention_mask,
@@ -471,5 +289,13 @@ class PonderingModelForCausalLM(PreTrainedModel, GenerationMixin):
             # return_dict=return_dict,
             **kwargs
         )
-        
-        return outputs
+        logits = outputs['logits']
+
+        loss = None
+        if labels is not None:
+            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
+
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=logits
+        )
