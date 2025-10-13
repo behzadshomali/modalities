@@ -20,6 +20,7 @@ class PonderingModelConfig(BaseModel):
     apply_embed_scale: bool = False
     inverse_scale: bool = False
     grad_checkpointing: bool = True
+    track_intermediate_gradients: bool = True
     seed: Optional[int] = None
 
     model_config = {"arbitrary_types_allowed": True}
@@ -40,6 +41,7 @@ class PonderingModelForCausalLM(NNModel):
         apply_embed_scale: bool = False,
         inverse_scale: bool = False,
         grad_checkpointing: bool = True,
+        track_intermediate_gradients: bool = True,
         topk: int = -1
     ):
         weight_decay_groups = {
@@ -58,6 +60,7 @@ class PonderingModelForCausalLM(NNModel):
             apply_embed_scale=apply_embed_scale,
             inverse_scale=inverse_scale,
             grad_checkpointing=grad_checkpointing,
+            track_intermediate_gradients=track_intermediate_gradients,
             topk=topk
         )
     
@@ -100,6 +103,7 @@ class PonderingModelWrapper(nn.Module):
         apply_embed_scale: bool = False,
         inverse_scale: bool = False,
         grad_checkpointing: bool = True,
+        track_intermediate_gradients: bool = True,
         topk: int = -1
     ):
         super().__init__()
@@ -109,6 +113,7 @@ class PonderingModelWrapper(nn.Module):
         self.apply_embed_scale = apply_embed_scale       
         self.inverse_scale = inverse_scale 
         self.grad_checkpointing = grad_checkpointing
+        self.track_intermediate_gradients = track_intermediate_gradients
         self.topk = topk
 
 
@@ -193,10 +198,14 @@ class PonderingModelWrapper(nn.Module):
             self.embed_scale = torch.tensor(1.0)
         
         for _ in range(self.pondering_steps):
-            if self.grad_checkpointing:
-                input_embedding = checkpoint(pondering_step, input_embedding, use_reentrant=False)
+            if self.track_intermediate_gradients:
+                if self.grad_checkpointing:
+                    input_embedding = checkpoint(pondering_step, input_embedding, use_reentrant=False)
+                else:
+                    input_embedding = pondering_step(input_embedding)
             else:
-                input_embedding = pondering_step(input_embedding)
+                with torch.no_grad():
+                    input_embedding = pondering_step(input_embedding)
 
 
         # Continue with base model forward pass

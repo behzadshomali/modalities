@@ -553,6 +553,7 @@ class ModelFactory:
         inverse_scale: bool,
         grad_checkpointing: bool,
         topk: int,
+        track_intermediate_gradients: bool,
         use_meta_device: Optional[bool] = False,
         seed: int = None,
     ):
@@ -566,7 +567,8 @@ class ModelFactory:
             apply_embed_scale=apply_embed_scale,
             inverse_scale=inverse_scale,
             grad_checkpointing=grad_checkpointing,
-            topk=topk
+            topk=topk,
+            track_intermediate_gradients=track_intermediate_gradients,
         )
         
         if use_meta_device:
