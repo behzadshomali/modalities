@@ -108,6 +108,9 @@ def load_config(config_path, overwrite_config=True):
     if "peft" in args:
         wandb_name += f"-lora{args['peft']['r']}"
 
+    if "pondering" in args['model_name']: # ../fineweb2_edu_pondering3_pythia/
+        wandb_name = "po" + args['model_name'].split("pondering")[1][0] + "-" + wandb_name
+
     args['wandb']['name'] = wandb_name
 
 
@@ -230,6 +233,10 @@ class WandbOffsetCallback(TrainerCallback):
 
 
 
+logging.basicConfig(
+    level=logging.DEBUG,  # Set minimum log level
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -317,14 +324,16 @@ def run_lighteval_cli(
                 eval_model_path = merged_dir
                 checkpoint_dir = Path(merged_dir)
 
+            
             model_args = f"model_name={eval_model_path},use_chat_template=True,trust_remote_code=True"
             cmd_string = (
-                f"lighteval accelerate "
+                f"conda run -n lighteval_env lighteval accelerate "
                 f'"{model_args}" '
                 f'"{eval_tasks}" '
                 f"--max-samples 100 "
             )
             env = os.environ.copy()
+
             env["CUDA_VISIBLE_DEVICES"] = str(eval_gpu)
             env["HF_HOME"] = hf_home
             logger.info(f"Running command: CUDA_VISIBLE_DEVICES={eval_gpu} {cmd_string}")
@@ -339,6 +348,29 @@ def run_lighteval_cli(
                 preexec_fn=os.setsid,
                 cwd=os.getcwd(),
             )
+
+            if result.returncode != 0:
+                logger.warning(f"Evaluation failed for step {step}, retrying once without chat_template")
+                model_args = f"model_name={eval_model_path},trust_remote_code=True"
+                cmd_string = (
+                    f"conda run -n lighteval_env lighteval accelerate "
+                    f'"{model_args}" '
+                    f'"{eval_tasks}" '
+                    f"--max-samples 100 "
+                )
+                logger.info(f"Retrying command: CUDA_VISIBLE_DEVICES={eval_gpu} {cmd_string}")
+                
+                result = subprocess.run(
+                    cmd_string,
+                    shell=True,
+                    env=env,
+                    capture_output=False,
+                    text=True,
+                    check=False,
+                    preexec_fn=os.setsid,
+                    cwd=os.getcwd(),
+                )
+
 
             if result.returncode != 0:
                 logger.error(f"Evaluation failed for step {step}")
@@ -490,7 +522,7 @@ class EvalCallback(TrainerCallback):
             max_workers=1,  
             eval_gpu=eval_gpu, 
             source_model_path=source_model_path,
-            eval_tasks="leaderboard|gsm8k|8|1,leaderboard|hellaswag|5|1",
+            eval_tasks="leaderboard|gsm8k|0|1,leaderboard|gsm8k|8|1,leaderboard|hellaswag|5|1",
             hf_home=hf_home,
         )
 
