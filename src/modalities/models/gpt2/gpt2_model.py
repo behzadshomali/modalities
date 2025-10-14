@@ -2,7 +2,7 @@ import logging
 import math
 from abc import abstractmethod
 from enum import Enum
-from typing import Annotated, Mapping, Optional, Any
+from typing import Annotated, Mapping, Optional, Any, Union
 
 import torch
 import torch.nn as nn
@@ -55,6 +55,18 @@ class PositionTypes(str, Enum):
 
     ABSOLUTE = "ABSOLUTE"
     NOPE = "NOPE"
+
+class BlockTypes(str, Enum):
+    """
+    Enum class representing different block types.
+
+    Attributes:
+        STANDARD (str): Represents the standard GPT2 block type.
+        RECURSIVE (str): Represents the recursive GPT2 block type.
+    """
+
+    STANDARD = "STANDARD"
+    RECURSIVE = "RECURSIVE"
 
 
 class QueryKeyValueTransform(nn.Module):
@@ -344,6 +356,9 @@ class GPT2LLMConfig(BaseModel):
     ffn_norm_config: LayerNormWrapperConfig
     lm_head_norm_config: LayerNormWrapperConfig
     use_weight_tying: bool
+    recurrent_blocks_indices: list[int]
+    k_last_recurrence_gradient_backprops: Union[int, list[int]]
+    recurrent_blocks_max_recurrences: Union[int, list[int]]
 
     @model_validator(mode="after")
     def check_divisibility(self) -> "GPT2LLMConfig":
@@ -754,6 +769,130 @@ class GPT2Block(nn.Module):
         x = x + self.attn(self.attention_norm(x))
         x = x + self.mlp(self.ffn_norm(x))
         return x
+    
+
+class RecursiveGPT2Block(nn.Module):
+    """GPT2Block class."""
+
+    def __init__(
+        self,
+        n_embd: int,
+        bias: bool,
+        n_head_q: int,
+        n_head_kv: int,
+        activation_type: ActivationType,
+        attention_impl: AttentionImplementation,
+        attention_config: AttentionConfig,
+        dropout: float,
+        ffn_hidden: int,
+        attention_norm: nn.Module,
+        ffn_norm: nn.Module,
+        max_recurrence: int,
+        k_last_recurrence_gradient_backprop: int = -1,
+    ):
+        """
+        Initializes the GPT2Block.
+
+        Args:
+            n_embd (int): The embedding dimension.
+            bias (bool): Whether to include bias in the model.
+            n_head_q (int): The number of attention heads for queries.
+            n_head_kv (int): The number of attention heads for keys and values.
+            activation_type (ActivationType): The type of activation function to use.
+            attention_impl (AttentionImplementation): The implementation of attention mechanism.
+            attention_config (AttentionConfig): The configuration for attention mechanism.
+            dropout (float): The dropout rate.
+            ffn_hidden (int): The size of the hidden layer in the feed-forward network.
+            attention_norm (nn.Module): The normalization layer for attention.
+            ffn_norm (nn.Module): The normalization layer for feed-forward network.
+            max_recurrence (int): The maximum number of recurrences.
+            k_last_recurrence_gradient_backprop (int): The number of last recurrences to backpropagate gradients through.
+                If set to -1, backpropagation is done through all recurrences. Default is -1.
+
+        Note:
+            When using RecursiveGPT2Block, the input tensor is feeded to the block 1+max_recurrence times. In other words,
+            when max_recurrence=0 (although not allowed), the RecursiveGPT2Block behaves like a standard GPT2Block.
+        """
+        super().__init__()
+        self.attention_norm = attention_norm
+        self.ffn_norm = ffn_norm
+        self._check_ffn_hidden_dim(n_embd=n_embd, ffn_hidden=ffn_hidden)
+        self.attn = CausalSelfAttention(
+            n_head_q=n_head_q,
+            n_head_kv=n_head_kv,
+            n_embd=n_embd,
+            attention_config=attention_config,
+            attention_impl=attention_impl,
+            bias=bias,
+            dropout=dropout,
+        )
+        self.max_recurrence = max_recurrence
+        self.k_last_recurrence_gradient_backprop = k_last_recurrence_gradient_backprop
+
+        if activation_type == ActivationType.GELU:
+            self.mlp = TransformerMLP(n_embd=n_embd, ffn_hidden=ffn_hidden, bias=bias, dropout=dropout)
+        elif activation_type == ActivationType.SWIGLU:
+            self.mlp = SwiGLU(n_embd=n_embd, ffn_hidden=ffn_hidden, bias=bias)
+        else:
+            raise NotImplementedError("unimplemented activation")
+
+    def _check_ffn_hidden_dim(self, n_embd: int, ffn_hidden: int) -> None:
+        expected_hidden_dim = 4 * n_embd
+
+        if ffn_hidden != expected_hidden_dim:
+            logger.warning(
+                f"Expected `ffn_hidden` to be 4 * `n_embd` ({expected_hidden_dim}), "
+                f"but got `n_embd = {n_embd}` and `ffn_hidden = {ffn_hidden}`."
+            )
+
+    def _check_max_recurrence(self) -> None:
+        if self.max_recurrence < 1:
+            raise ValueError(
+                "When using RecursiveGPT2Block, 'max_recurrence' must be >= 1. " \
+                "If you don't want recurrence, use GPT2Block instead."
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the RecursiveGPT2Block.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output tensor.
+        """
+        # Determine whether to backprop through all steps
+        full_grad = (
+            self.k_last_recurrence_gradient_backprop == -1
+            or self.k_last_recurrence_gradient_backprop > self.max_recurrence
+        )
+
+        def step(x, requires_grad=True):
+            """One recurrence step with or without gradient tracking."""
+            if requires_grad:
+                x = x + self.attn(self.attention_norm(x))
+                x = x + self.mlp(self.ffn_norm(x))
+            else:
+                with torch.no_grad():
+                    x = x + self.attn(self.attention_norm(x))
+                    x = x + self.mlp(self.ffn_norm(x))
+            return x
+
+        # first step is always executed independently of self.max_recurrence
+        x = step(x, requires_grad=full_grad)
+
+        # recurrent steps
+        for r in range(self.max_recurrence):
+            if full_grad:
+                requires_grad = True
+            else:
+                # only backprop through the last k iterations
+                requires_grad = r >= (self.max_recurrence - self.k_last_recurrence_gradient_backprop)
+            x = step(x, requires_grad)
+
+        return x
+    
 
 
 class GPT2LLM(NNModel):
@@ -780,6 +919,9 @@ class GPT2LLM(NNModel):
         ffn_norm_config: LayerNormWrapperConfig,
         lm_head_norm_config: LayerNormWrapperConfig,
         use_weight_tying: bool,
+        recurrent_blocks_indices: list[int],
+        k_last_recurrence_gradient_backprops: Union[int, list[int]],
+        recurrent_blocks_max_recurrences: Union[int, list[int]],
         seed: int = None,
     ):
         """
@@ -804,8 +946,12 @@ class GPT2LLM(NNModel):
             attention_norm_config (LayerNormWrapperConfig): Config for the attention normalization module.
             ffn_norm_config (LayerNormWrapperConfig): Config for the feed-forward network normalization module.
             lm_head_norm_config (LayerNormWrapperConfig): Config for the language model head normalization module.
-            seed (int, optional): The random seed. Defaults to None.
             use_weight_tying (bool): Whether to use weight tying.
+            recurrent_blocks_indices (list[int]): List of indices of the layers to be made recurrent.
+            k_last_recurrence_gradient_backprops (Union[int, list[int]]): Number of last recurrences to backpropagate gradients through
+                (only for recurrent blocks). If -1, backpropagation is done through all recurrences.
+            recurrent_blocks_max_recurrences (Union[int, list[int]]): Maximum number of recurrences for each recurrent block.
+            seed (int, optional): The random seed. Defaults to None.
         """
         weight_decay_groups = {
             "linear": [".attn", ".mlp", ".lm_head.weight"],
@@ -819,9 +965,23 @@ class GPT2LLM(NNModel):
         self.n_embd = n_embd
         self.n_layer = n_layer
         self.poe_type = poe_type
+        self.recurrent_blocks_indices = recurrent_blocks_indices
+        self.blocks_types = []
 
         assert vocab_size is not None
         assert sequence_length is not None
+        
+        if isinstance(k_last_recurrence_gradient_backprops, int):
+            self.k_last_recurrence_gradient_backprops = [k_last_recurrence_gradient_backprops] * len(recurrent_blocks_indices)
+        else:
+            self.k_last_recurrence_gradient_backprops = k_last_recurrence_gradient_backprops
+
+        if isinstance(recurrent_blocks_max_recurrences, int):
+            self.max_recurrences = [recurrent_blocks_max_recurrences] * len(recurrent_blocks_indices)
+        else:
+            self.max_recurrences = recurrent_blocks_max_recurrences
+        
+        self._check_max_recurrences()
 
         # TODO: dependency injection
         if poe_type is PositionTypes.ABSOLUTE:
@@ -839,32 +999,65 @@ class GPT2LLM(NNModel):
         ]:
             raise ValueError('It is expected to use "RotaryTransform" together with "NOPE".')
 
+
+        blocks_list = []
+        recurrent_blocks_cnt = 0
+        for n in range(n_layer):
+            block_type = BlockTypes.RECURSIVE if n in self.recurrent_blocks_indices else BlockTypes.STANDARD
+            max_recurrence = self.max_recurrences[recurrent_blocks_cnt] if block_type == BlockTypes.RECURSIVE else None
+            k_last_gradient_backprop = self.k_last_recurrence_gradient_backprops[recurrent_blocks_cnt] if block_type == BlockTypes.RECURSIVE else None
+            if block_type == BlockTypes.RECURSIVE:
+                recurrent_blocks_cnt += 1
+
+            if block_type == BlockTypes.STANDARD:
+                block = GPT2Block(
+                    n_embd=n_embd,
+                    bias=bias,
+                    n_head_q=n_head_q,
+                    n_head_kv=n_head_kv,
+                    activation_type=activation_type,
+                    attention_impl=attention_implementation,
+                    attention_config=attention_config,
+                    dropout=dropout,
+                    ffn_hidden=ffn_hidden,
+                    # deepcopy did not work here! The weights were then automatically
+                    # moved to a cuda device even when the deepcopied weights were on
+                    # a meta device!
+                    attention_norm=attention_norm_config.norm_type.value(**dict(attention_norm_config.config)),
+                    ffn_norm=ffn_norm_config.norm_type.value(**dict(ffn_norm_config.config)),
+                )
+            elif block_type == BlockTypes.RECURSIVE:
+                block = RecursiveGPT2Block(
+                    n_embd=n_embd,
+                    bias=bias,
+                    n_head_q=n_head_q,
+                    n_head_kv=n_head_kv,
+                    activation_type=activation_type,
+                    attention_impl=attention_implementation,
+                    attention_config=attention_config,
+                    dropout=dropout,
+                    ffn_hidden=ffn_hidden,
+                    attention_norm=attention_norm_config.norm_type.value(**dict(attention_norm_config.config)),
+                    ffn_norm=ffn_norm_config.norm_type.value(**dict(ffn_norm_config.config)),
+                    max_recurrence=max_recurrence,
+                    k_last_recurrence_gradient_backprop=k_last_gradient_backprop  
+                )
+            else:
+                raise ValueError(
+                    f"Block type {block_type} not supported! "
+                    f"Supported block types are: {list(BlockTypes)}"
+                )
+            blocks_list.append(block)
+            self.blocks_types = block
+
+        assert len(blocks_list) == n_layer, f"Expected {n_layer} blocks, but got {len(blocks_list)}!"
+
         self.transformer = nn.ModuleDict(
             dict(
                 wte=nn.Embedding(num_embeddings=vocab_size, embedding_dim=n_embd),
                 wpe=wpe,
                 drop=nn.Dropout(dropout),
-                h=nn.ModuleList(
-                    [
-                        GPT2Block(
-                            n_embd=n_embd,
-                            bias=bias,
-                            n_head_q=n_head_q,
-                            n_head_kv=n_head_kv,
-                            activation_type=activation_type,
-                            attention_impl=attention_implementation,
-                            attention_config=attention_config,
-                            dropout=dropout,
-                            ffn_hidden=ffn_hidden,
-                            # deepcopy did not work here! The weights were then automatically
-                            # moved to a cuda device even when the deepcopied weights were on
-                            # a meta device!
-                            attention_norm=attention_norm_config.norm_type.value(**dict(attention_norm_config.config)),
-                            ffn_norm=ffn_norm_config.norm_type.value(**dict(ffn_norm_config.config)),
-                        )
-                        for _ in range(n_layer)
-                    ]
-                ),
+                h=nn.ModuleList(blocks_list),
                 lm_head_norm=lm_head_norm_config.norm_type.value(**dict(lm_head_norm_config.config)),
                 # NOTE: If we make the bias configurable, we must update the number of parameters calculation
                 # in the test_initialization_fsdp1.py, accordingly.
@@ -879,6 +1072,29 @@ class GPT2LLM(NNModel):
             self.transformer.wte.weight = (
                 self.transformer.lm_head.weight
             )  # https://paperswithcode.com/method/weight-tying
+
+    def _check_max_recurrences(self) -> None:
+        if self.blocks_types is not None:
+            if BlockTypes.RECURSIVE in self.blocks_types:
+                if self.max_recurrences is None:
+                    raise ValueError(
+                        "When using RecursiveGPT2Block, 'max_recurrences' must be provided."
+                    )
+                if len(self.max_recurrences) != len(self.recursive_blocks_indices):
+                    raise ValueError(
+                        f"The length of max_recurrences ({len(self.max_recurrences)}) must be equal to the length of "
+                        f"recursive_blocks_indices ({len(self.recursive_blocks_indices)})."
+                    )
+                if len(self.k_last_recurrence_gradient_backprops) != len(self.recursive_blocks_indices):
+                    raise ValueError(
+                        f"The length of k_last_recurrence_gradient_backprop ({len(self.k_last_recurrence_gradient_backprops)}) must be equal to the length of "
+                        f"recursive_blocks_indices ({len(self.recursive_blocks_indices)})."
+                    )
+                for recurrence_block_index in self.recurrent_blocks_indices:
+                    if recurrence_block_index >= self.n_layer or recurrence_block_index < 0:
+                        raise ValueError(
+                            f"All values in 'recurrent_blocks_indices' must be (including) between 0 and n_layer-1 ({self.n_layer-1})."
+                        )
 
     def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False):
         """

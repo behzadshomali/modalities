@@ -3,7 +3,7 @@ import json
 from dataclasses import asdict, dataclass
 from functools import partial
 from pathlib import Path
-from typing import Optional, Set
+from typing import Optional, Set, Union
 
 import torch
 import torch.distributed as dist
@@ -566,6 +566,9 @@ class GPT2ModelFactory:
         ffn_norm_config: LayerNormWrapperConfig,
         lm_head_norm_config: LayerNormWrapperConfig,
         use_weight_tying: bool,
+        recurrent_blocks_indices: list[int],
+        k_last_recurrence_gradient_backprops: Union[int, list[int]],
+        recurrent_blocks_max_recurrences: Union[int, list[int]],
         use_meta_device: Optional[bool] = False,
         seed: int = None,
     ) -> GPT2LLM:
@@ -590,6 +593,9 @@ class GPT2ModelFactory:
             lm_head_norm_config=lm_head_norm_config,
             seed=seed,
             use_weight_tying=use_weight_tying,
+            recurrent_blocks_indices=recurrent_blocks_indices,
+            k_last_recurrence_gradient_backprops=k_last_recurrence_gradient_backprops,
+            recurrent_blocks_max_recurrences=recurrent_blocks_max_recurrences
         )
         if use_meta_device and use_weight_tying:
             raise ValueError(
