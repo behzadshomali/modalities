@@ -1,0 +1,27 @@
+settings:
+  src_path: /raid/s3/opengptx/behzad_shomali/data/openmath_train_formatted.jsonl
+  dst_path: /raid/s3/opengptx/behzad_shomali/data/openmath_train.pbin
+  index_path: /raid/s3/opengptx/behzad_shomali/data/openmath_train.idx
+  jq_pattern: .content
+  num_cpus: ${node_env:num_cpus}
+  eod_token: 'null'
+  processing_batch_size: 1000
+  raw_samples_queue_size: 300
+  processed_samples_queue_size: 300
+
+# tokenizer:
+#   component_key: tokenizer
+#   variant_key: pretrained_hf_tokenizer
+#   config:
+#     pretrained_model_name_or_path: tokenizer
+#     padding: false
+#     truncation: false
+
+  
+tokenizer:
+  component_key: tokenizer
+  config:
+    padding: false
+    pretrained_model_name_or_path: Eurolingua/Modalities_8B_3.73T
+    truncation: false
+  variant_key: pretrained_hf_tokenizer
