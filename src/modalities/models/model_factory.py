@@ -566,9 +566,11 @@ class GPT2ModelFactory:
         ffn_norm_config: LayerNormWrapperConfig,
         lm_head_norm_config: LayerNormWrapperConfig,
         use_weight_tying: bool,
-        recurrent_blocks_indices: list[int],
-        k_last_recurrence_gradient_backprops: Union[int, list[int]],
-        recurrent_blocks_max_recurrences: Union[int, list[int]],
+        recurrent_blocks_indices: Optional[list[int]] = None,
+        k_last_recurrence_gradient_backprops: Optional[Union[int, list[int]]] = None,
+        always_propagate_first: bool = False,
+        recurrent_blocks_max_recurrences: Optional[Union[int, list[int]]] = None,
+        sample_iterations: Optional[bool] = False,
         use_meta_device: Optional[bool] = False,
         seed: int = None,
     ) -> GPT2LLM:
@@ -595,7 +597,9 @@ class GPT2ModelFactory:
             use_weight_tying=use_weight_tying,
             recurrent_blocks_indices=recurrent_blocks_indices,
             k_last_recurrence_gradient_backprops=k_last_recurrence_gradient_backprops,
-            recurrent_blocks_max_recurrences=recurrent_blocks_max_recurrences
+            recurrent_blocks_max_recurrences=recurrent_blocks_max_recurrences,
+            sample_iterations=sample_iterations,
+            always_propagate_first=always_propagate_first,
         )
         if use_meta_device and use_weight_tying:
             raise ValueError(
