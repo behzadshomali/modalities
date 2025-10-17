@@ -880,19 +880,15 @@ class RecursiveGPT2Block(nn.Module):
             or self.k_last_recurrence_gradient_backprop > self.max_recurrence
         )
 
-        def step(x, requires_grad=True):
+        def step(x):
             """One recurrence step with or without gradient tracking."""
-            if requires_grad:
-                x = x + self.attn(self.attention_norm(x))
-                x = x + self.mlp(self.ffn_norm(x))
-            else:
-                with torch.no_grad():
-                    x = x + self.attn(self.attention_norm(x))
-                    x = x + self.mlp(self.ffn_norm(x))
+            x = x + self.attn(self.attention_norm(x))
+            x = x + self.mlp(self.ffn_norm(x))
+            
             return x
 
         # first step is always executed independently of self.max_recurrence
-        x = step(x, requires_grad=full_grad or self.always_propagate_first)
+        x = step(x)
 
         # if self.sample_iterations is True and the model is in training mode,
         # sample the number of recurrences
@@ -901,12 +897,9 @@ class RecursiveGPT2Block(nn.Module):
         else:
             recurrences = self.max_recurrence
         for r in range(recurrences):
-            if full_grad:
-                requires_grad = True
-            else:
-                # only backprop through the last k iterations
-                requires_grad = r >= (recurrences - self.k_last_recurrence_gradient_backprop)
-            x = step(x, requires_grad)
+            if not full_grad and r < (recurrences - self.k_last_recurrence_gradient_backprop):
+                x = x.detach()
+            x = step(x)
 
         return x.to(type_)
     
@@ -922,6 +915,7 @@ class GroupRecursiveGPT2Block(nn.Module):
         self,
         gpt2_blocks: list[GPT2Block],
         max_recurrence: int,
+        n_embd: int,
         k_last_recurrence_gradient_backprop: int = -1,
         sample_iterations: bool = False,
         always_propagate_first: bool = False
@@ -948,6 +942,7 @@ class GroupRecursiveGPT2Block(nn.Module):
         self.k_last_recurrence_gradient_backprop = k_last_recurrence_gradient_backprop
         self.sample_iterations = sample_iterations
         self.always_propagate_first = always_propagate_first
+        self.recurrence_embd = nn.Embedding(max_recurrence + 1, n_embd)
 
         # self._check_max_recurrence()
 
@@ -970,19 +965,18 @@ class GroupRecursiveGPT2Block(nn.Module):
             or self.k_last_recurrence_gradient_backprop > self.max_recurrence
         )
 
-        def step(x, requires_grad=True):
+        def step(x, steps_done):
             """One recurrence step with or without gradient tracking."""
-            if requires_grad:
-                for block in self.gpt2_blocks:
-                    x = block(x)
-            else:
-                with torch.no_grad():
-                    for block in self.gpt2_blocks:
-                        x = block(x)
+            # add recurrence embedding
+            recurrence_emb = self.recurrence_embd(steps_done).unsqueeze(1)
+            x = x + recurrence_emb
+            for block in self.gpt2_blocks:
+                x = block(x)
+            
             return x
 
         # first step is always executed independently of self.max_recurrence
-        x = step(x, requires_grad=full_grad or self.always_propagate_first)
+        x = step(x, steps_done=torch.tensor(0, device=x.device))
 
         # if self.sample_iterations is True and the model is in training mode,
         # sample the number of recurrences
@@ -991,13 +985,13 @@ class GroupRecursiveGPT2Block(nn.Module):
         else:
             recurrences = self.max_recurrence
         for r in range(recurrences):
-            if full_grad:
-                requires_grad = True
-            else:
-                # only backprop through the last k iterations
-                requires_grad = r >= (recurrences - self.k_last_recurrence_gradient_backprop)
-            x = step(x, requires_grad)
-
+            if not full_grad and r < (recurrences - self.k_last_recurrence_gradient_backprop):
+                # alpha = min((r+1e-4) / (1+self.k_last_recurrence_gradient_backprop), 1.0)
+                # x = x * alpha + x.detach() * (1 - alpha)
+                x = x.detach()
+            x = step(x, steps_done=torch.tensor(r+1, device=x.device))
+            
+                
         return x.to(type_)
 
 
@@ -1064,7 +1058,7 @@ class GPT2LLM(NNModel):
         """
         weight_decay_groups = {
             "linear": [".attn", ".mlp", ".lm_head.weight"],
-            "embedding": [".wte", ".wpe"],
+            "embedding": [".wte", ".wpe", ".recurrence_embd"],
             "layernorm": [".attention_norm", ".ffn_norm", ".lm_head_norm"],
         }
         super().__init__(weight_decay_groups=weight_decay_groups, seed=seed)
@@ -1182,7 +1176,8 @@ class GPT2LLM(NNModel):
                     max_recurrence=max_recurrence,
                     k_last_recurrence_gradient_backprop=k_last_gradient_backprop,
                     sample_iterations=sample_iterations,
-                    always_propagate_first=always_propagate_first
+                    always_propagate_first=always_propagate_first,
+                    n_embd=n_embd
                 )
             else:
                 raise ValueError(
