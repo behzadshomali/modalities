@@ -55,6 +55,12 @@ def convert_gpt2(
     hf_model, modalities_model = convert_model_checkpoint(modalities_config)
 
     if num_testruns > 0:
+        import torch, random, numpy as np
+        torch.manual_seed(0)
+        torch.cuda.manual_seed_all(10)
+        np.random.seed(0)
+        random.seed(0)
+
         check_converted_model(
             hf_model.to(device_hf),
             modalities_model.to(device_modalities),
