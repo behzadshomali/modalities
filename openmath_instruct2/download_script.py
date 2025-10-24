@@ -4,7 +4,8 @@ from huggingface_hub import list_repo_files, hf_hub_download
 
 # login to HF if needed
 from huggingface_hub import login
-login(token="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")
+TOKEN = None
+login(token=TOKEN)
 
 
 def estimate_tokens(text):
