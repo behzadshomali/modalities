@@ -1,7 +1,8 @@
 import os
+import sys
 
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
@@ -9,7 +10,7 @@ from utils import load_config
 
 
 
-config_path = "/home/behzad_shomali/modalities/src/modalities/instruction_finetuning/configs/OpenMathInstruct-2+norm_embed_rank64_markus_Llama3.1_8B.yaml"
+config_path = sys.argv[1]
 config = load_config(config_path).copy()
 
 
@@ -43,7 +44,7 @@ print("!"*20, "# visible devices:", torch.cuda.device_count(), "!"*20)
 
 sacrebleu = evaluate.load("sacrebleu")
 
-def preprocess_logits_for_metrics(logits, labels, temperature=1.0):
+def preprocess_logits_for_metrics(logits, labels, temperature=0.8):
     global config
     packing = config['sft']['packing']
     
@@ -56,12 +57,12 @@ def preprocess_logits_for_metrics(logits, labels, temperature=1.0):
     if not packing:
         flat_probs = probs.reshape(-1, probs.size(-1))
         # Sample from the distribution
-        # sampled_tokens = torch.multinomial(flat_probs, num_samples=1).squeeze(-1)
-        sampled_tokens = flat_probs.argmax(dim=-1)  # pick max prob token
+        sampled_tokens = torch.multinomial(flat_probs, num_samples=1).squeeze(-1)
+        # sampled_tokens = flat_probs.argmax(dim=-1)  # pick max prob token
         sampled_tokens = sampled_tokens.view(probs.size(0), probs.size(1))
     else:
-        sampled_tokens = probs.squeeze().argmax(dim=-1).unsqueeze(0)
-        # sampled_tokens = torch.multinomial(probs.squeeze(), num_samples=1).squeeze().unsqueeze(0)
+        # sampled_tokens = probs.squeeze().argmax(dim=-1).unsqueeze(0)
+        sampled_tokens = torch.multinomial(probs.squeeze(), num_samples=1).squeeze().unsqueeze(0)
     
     return sampled_tokens
 
@@ -212,6 +213,13 @@ if "peft" in config:
     
 print_trainable_params(model)
 
+model.config.use_cache = False
+
+if "recursion_settings" in config and config["recursion_settings"]["overwrite_recursions"]:
+    for i, idx in enumerate(config["recursion_settings"]["recursion_indices"]):
+        model.model.layers[idx].max_recurrence = config["recursion_settings"]["iterations_num"][i]
+    print("The max_recursions have been overwritten!")
+
 trainer = SFTTrainer(
     model=model,
     train_dataset=final_train_dataset,
@@ -224,7 +232,7 @@ trainer = SFTTrainer(
     callbacks=[SavePeftModelCallback(), EvalCallback(eval_gpu=config["eval_device"], source_model_path=config['model_name'], hf_home=config['new_cache_dir'])]
 )
 # EvalCallback(eval_gpu=config["eval_device"], source_model_path=config['model_name'], hf_home=config['new_cache_dir'])
-trainer.model.print_trainable_parameters()
+# trainer.model.print_trainable_parameters()
 
 try:
     trainer.train(config.get("resume_from_checkpoint", False))
