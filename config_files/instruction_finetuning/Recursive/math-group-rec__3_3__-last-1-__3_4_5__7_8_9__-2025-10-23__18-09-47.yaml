@@ -1,4 +1,4 @@
-eval_device: 7
+eval_device: 2
 datasets:
 - instruction_col: problem
   is_in_HF: true
@@ -15,7 +15,7 @@ datasets:
   weight: 1
 learn_embed: true
 learn_normalization: true
-model_name: /raid/s3/opengptx/behzad_shomali/hf_converted/math-rec_2-3-5__4-7-10__-2025-10-16__13-47-59
+model_name: /raid/s3/opengptx/behzad_shomali/hf_converted/math-group-rec__3_3__-last-1-__3_4_5__7_8_9__-2025-10-23__18-09-47
 new_cache_dir: /raid/s3/opengptx/behzad_shomali/custom_hf_cache/
 preprocess_function: format_openmathinstruct2
 random_seed: 2000
@@ -23,7 +23,7 @@ sft:
   assistant_only_loss: false
   bf16: true
   completion_only_loss: false
-  # dataloader_num_workers: 4
+  dataloader_num_workers: 2
   disable_tqdm: false
   do_eval: true
   eval_accumulation_steps: 1
@@ -43,7 +43,7 @@ sft:
   metric_for_best_model: eval_sacrebleu
   num_train_epochs: 1
   optim: paged_adamw_8bit
-  output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/math-rec_2-3-5__4-7-10__-2025-10-16__13-47-59/
+  output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/math-group-rec__3_3__-last-1-__3_4_5__7_8_9__-2025-10-23__18-09-47/
   packing: true
   per_device_eval_batch_size: 8
   per_device_train_batch_size: 4
@@ -61,5 +61,6 @@ train_size: 990000
 val_size: 10000
 wandb:
   project: Recursive_IT_OpenMathInstruct-2
-  name: math-rec[2, 3, 5]-[4, 7, 10]-2025-10-16
+  name: math-group-rec[3, 3]-last-1-[[3, 4, 5], [7, 8, 9]]-2025-10-23
+
 

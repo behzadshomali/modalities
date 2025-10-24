@@ -1,4 +1,6 @@
 settings:
+  device: 0 
+  model_path: /raid/s3/opengptx/behzad_shomali/checkpoints/2025-10-23__18-09-47_6233b34b/eid_2025-10-23__18-09-47_6233b34b-model-seen_steps_38000-seen_tokens_5603328000-target_steps_39549-target_tokens_5831737344.bin
   experiment_id: ${modalities_env:experiment_id}
   config_file_path: ${modalities_env:config_file_path}
   referencing_keys:
@@ -255,7 +257,7 @@ model_raw:
     dropout: 0.0
     bias: false
     activation_type: swiglu
-    attention_implementation: pytorch_flash
+    attention_implementation: manual
     attention_config:
       qkv_transforms:
         - type_hint: RotaryTransform
@@ -362,4 +364,25 @@ mfu_calculator:
     world_size: ${settings.cuda_env.world_size}
     wrapped_model:
       instance_key: wrapped_model
+      pass_type: BY_REFERENCE(base)
+
+checkpointed_model:
+  component_key: model
+  variant_key: fsdp1_checkpointed
+  config: 
+    checkpoint_loading:
+      component_key: checkpoint_loading
+      variant_key: torch
+      config:
+        device: ${settings.device}
+        precision: BF16
+    model:
+      instance_key: model_raw
       pass_type: BY_REFERENCE
+    checkpoint_path: ${settings.model_path}
+
+tokenizer:
+  component_key: tokenizer
+  variant_key: pretrained_sp_tokenizer
+  config:
+    tokenizer_model_file: /raid/s3/opengptx/behzad_shomali/modalities/Eurolingua_tokenizer/tokenizer.model
