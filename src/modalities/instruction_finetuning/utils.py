@@ -7,6 +7,9 @@ import wandb
 from typing import Dict, Any
 from merge_lora import merge_lora_adapter
 
+import shutil 
+import random
+
 import logging
 import torch
 
@@ -82,6 +85,13 @@ def load_config(config_path, overwrite_config=True):
         args['preprocess_function'] = format_openmathinstruct2
     elif preprocess_function_str == "preprocess_function_simple":
         args['preprocess_function'] = preprocess_function_simple
+    elif preprocess_function_str == "format_openmathinstruct2_only_answer":
+        args['preprocess_function'] = format_openmathinstruct2_only_answer
+    else:
+        raise ValueError(
+            f"Preprocess function '{args['preprocess_function']}' is not valid. "
+            f"Please choose from [format_openmathinstruct2/preprocess_function_simple/format_openmathinstruct2_only_answer]"
+        )
 
     if "dataset_offset" in args:
         dataset_offset_value = 1
@@ -108,7 +118,10 @@ def load_config(config_path, overwrite_config=True):
     if "peft" in args:
         wandb_name += f"-lora{args['peft']['r']}"
 
-    args['wandb']['name'] = wandb_name
+    if "recursion_settings" in args and args["recursion_settings"]["overwrite_recursions"]:
+        wandb_name = f"new_rec{args['recursion_settings']['iterations_num']}" + wandb_name
+
+    args['wandb']['name'] = wandb_name + args['wandb'].get("name", "")
 
 
     # if overwrite_config:
@@ -148,6 +161,24 @@ def format_openmathinstruct2(
         "messages": [
             {"role": "user", "content": formatted_problem},
             {"role": "assistant", "content": example[response_col]},
+        ]
+    }
+
+def format_openmathinstruct2_only_answer(
+    example: Dict[str, Any], 
+    instruction_col: str, 
+    response_col: str
+) -> Dict[str, Any]:
+    """Format OpenMathInstruct-2 dataset to chat format with instruction template."""
+    instruction = "Solve the following math problem and put the final answer in \\boxed{}."
+    formatted_problem = f"{instruction}\n\n{example[instruction_col]}"
+
+    formatted_answer = f"The answer of this questions is: \\boxed{example['expected_answer']}"
+
+    return {
+        "messages": [
+            {"role": "user", "content": formatted_problem},
+            {"role": "assistant", "content": formatted_answer},
         ]
     }
 
@@ -290,9 +321,9 @@ def run_lighteval_cli(
     checkpoint_path: str, step: int, eval_gpu: int, source_model_path: str, eval_tasks: str, hf_home: str = "/raid/s3/opengptx/mfrey/huggingface"
 ) -> Optional[Dict[str, Any]]:
     """Run LightEval CLI evaluation and return results."""
-    
+    rand_int = random.randint(1000, 100000)
     # This creates a unique lock file for the given id
-    lock_path = f"/tmp/b_lighteval_gpu_{eval_gpu}.lock"
+    lock_path = f"/tmp/b_lighteval_gpu_{eval_gpu}_{rand_int}.lock"
     gpu_lock = FileLock(lock_path)
 
     try:
@@ -317,7 +348,13 @@ def run_lighteval_cli(
                 eval_model_path = merged_dir
                 checkpoint_dir = Path(merged_dir)
 
-            model_args = f"model_name={eval_model_path},use_chat_template=True,trust_remote_code=True"
+            model_args = (
+                f"model_name={eval_model_path},"
+                "use_chat_template=True,"
+                "trust_remote_code=True,"
+                "batch_size=16,"
+                'generation_parameters={"use_cache": false}'
+            )
             cmd_string = (
                 f"lighteval accelerate "
                 f'"{model_args}" '
@@ -501,7 +538,15 @@ class EvalCallback(TrainerCallback):
 
     def on_save(self, args, state, control, **kwargs):
         """Trigger evaluation when checkpoint is saved."""
+
         checkpoint_path = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+        
+        # manually copy the modeling_gpt2.py file
+        src_path = "/raid/s3/opengptx/behzad_shomali/modalities/src/modalities/conversion/gpt2/modeling_gpt2.py"
+        dst_path = os.path.join(checkpoint_path, "modeling_gpt2.py")
+
+        shutil.copy(src_path, dst_path)
+        
         if os.path.exists(checkpoint_path):
             logger.info(f"💾 Checkpoint saved at step {state.global_step}, triggering evaluation...")
             self.evaluator.submit_evaluation(checkpoint_path, state.global_step)
