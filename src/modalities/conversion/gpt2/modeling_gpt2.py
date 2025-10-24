@@ -260,6 +260,14 @@ class GPT2DecoderLayer(GradientCheckpointingLayer):
             bias=config.layer_norm_bias,
         )
 
+        self.can_use_cache = True
+        for recurrent_layer_idx in config.recurrent_blocks_indices:
+            if isinstance(recurrent_layer_idx, int):
+                recurrent_layer_idx = [recurrent_layer_idx]
+            if any(layer_idx-1 == idx for idx in recurrent_layer_idx):
+                # if this layer follows a recurrent layer
+                self.can_use_cache = False
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -271,19 +279,36 @@ class GPT2DecoderLayer(GradientCheckpointingLayer):
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor]:
+        
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         # Self Attention
-        hidden_states, _ = self.self_attn(
-            hidden_states=hidden_states,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            position_embeddings=position_embeddings,
-            **kwargs,
-        )
+        
+        if self.can_use_cache:
+            hidden_states, _ = self.self_attn(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_value=past_key_value,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+                **kwargs,
+            )
+        else:
+            # if use_cache:
+            #     logger.warning("Although use_cache was set to True, as this layer follows a recurrent layer, it cannot use caching!")
+            hidden_states, _ = self.self_attn(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_value=None,
+                use_cache=False,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+                **kwargs,
+            )
+
         hidden_states = residual + hidden_states
 
         # Fully Connected
@@ -291,7 +316,193 @@ class GPT2DecoderLayer(GradientCheckpointingLayer):
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
+
+        
         return hidden_states
+
+
+class RecursiveGPT2DecoderLayer(GradientCheckpointingLayer):
+    def __init__(self, config: GPT2Config, layer_idx: int, ith_recursive_block: int):
+        super().__init__()
+
+        # Recurrence related configs
+        self.sample_iterations = config.sample_iterations
+        self.k_last_recurrence_gradient_backprops = config.k_last_recurrence_gradient_backprops
+        self.max_recurrence = config.recurrent_blocks_max_recurrences[ith_recursive_block]
+
+        self.hidden_size = config.hidden_size
+
+        self.self_attn = LlamaAttention(config=config, layer_idx=layer_idx)
+
+        self.mlp = LlamaMLP(config)
+        self.input_layernorm = nn.LayerNorm(
+            config.hidden_size,
+            eps=config.layer_norm_eps,
+            elementwise_affine=config.layer_norm_elementwise_affine,
+            bias=config.layer_norm_bias,
+        )
+        self.post_attention_layernorm = nn.LayerNorm(
+            config.hidden_size,
+            eps=config.layer_norm_eps,
+            elementwise_affine=config.layer_norm_elementwise_affine,
+            bias=config.layer_norm_bias,
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Cache] = None,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> tuple[torch.Tensor]:
+        
+        def step(hidden_states):
+            residual = hidden_states
+            hidden_states = self.input_layernorm(hidden_states)
+            # Self Attention
+            hidden_states, _ = self.self_attn(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_value=None,
+                use_cache=False,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+                **kwargs,
+            )
+            hidden_states = residual + hidden_states
+
+            # Fully Connected
+            residual = hidden_states
+            hidden_states = self.post_attention_layernorm(hidden_states)
+            hidden_states = self.mlp(hidden_states)
+            hidden_states = residual + hidden_states
+            
+            return hidden_states
+        
+        # type_ = hidden_states.dtype
+
+        # first step is always executed independently of self.max_recurrence
+        hidden_states = step(hidden_states)
+
+        if self.sample_iterations:
+            recurrences = torch.randint(0, self.max_recurrence+1, (1,)).item()
+        else:
+            recurrences = self.max_recurrence
+    
+        for r in range(recurrences):
+            if not self.k_last_recurrence_gradient_backprops == -1:
+                if r < recurrences - self.k_last_recurrence_gradient_backprops:  
+                    hidden_states = hidden_states.detach()
+            hidden_states = step(hidden_states)
+
+        return hidden_states#.to(type_)
+    
+
+class GroupRecursiveGPT2DecoderLayer(GradientCheckpointingLayer):
+    def __init__(self, config: GPT2Config, layer_idx: int, ith_recursive_block: int, gpt2_blocks: list[GPT2DecoderLayer]):
+        super().__init__()
+
+        # Recurrence related configs
+        self.sample_iterations = config.sample_iterations
+        self.k_last_recurrence_gradient_backprops = config.k_last_recurrence_gradient_backprops
+        self.max_recurrence = config.recurrent_blocks_max_recurrences[ith_recursive_block]
+        self.gpt2_blocks = nn.ModuleList(gpt2_blocks)
+
+        self.hidden_size = config.hidden_size
+        self.use_recurrence_embedding = config.use_recurrence_embedding
+
+        # self.self_attn = LlamaAttention(config=config, layer_idx=layer_idx)
+
+        # self.mlp = LlamaMLP(config)
+        # self.input_layernorm = nn.LayerNorm(
+        #     config.hidden_size,
+        #     eps=config.layer_norm_eps,
+        #     elementwise_affine=config.layer_norm_elementwise_affine,
+        #     bias=config.layer_norm_bias,
+        # )
+        # self.post_attention_layernorm = nn.LayerNorm(
+        #     config.hidden_size,
+        #     eps=config.layer_norm_eps,
+        #     elementwise_affine=config.layer_norm_elementwise_affine,
+        #     bias=config.layer_norm_bias,
+        # )
+
+        if config.use_recurrence_embedding:
+            n_embd = gpt2_blocks[0].self_attn.q_proj.weight.shape[0]
+            if isinstance(config.recurrent_blocks_max_recurrences, int):
+                config.recurrent_blocks_max_recurrences = [config.recurrent_blocks_max_recurrences] * len(config.recurrent_blocks_indices)
+            max_recurrence = config.recurrent_blocks_max_recurrences[ith_recursive_block] 
+            self.recurrence_embd = nn.Embedding(max_recurrence + 1, n_embd)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Cache] = None,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> tuple[torch.Tensor]:
+        
+        def step(hidden_states, steps_done):
+            if self.use_recurrence_embedding:
+                recurrence_emb = self.recurrence_embd(steps_done)
+                hidden_states = hidden_states + recurrence_emb
+                # print("modeling_gpt2(rec)", steps_done, recurrence_emb.mean().item(), recurrence_emb.max().item(), recurrence_emb.min().item())
+
+            for block in self.gpt2_blocks:
+                residual = hidden_states
+                hidden_states = block.input_layernorm(hidden_states)
+                # Self Attention
+                hidden_states, _ = block.self_attn(
+                    hidden_states=hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=None,
+                    use_cache=False,
+                    cache_position=cache_position,
+                    position_embeddings=position_embeddings,
+                    **kwargs,
+                )
+                hidden_states = residual + hidden_states
+
+                # Fully Connected
+                residual = hidden_states
+                hidden_states = block.post_attention_layernorm(hidden_states)
+                hidden_states = block.mlp(hidden_states)
+                hidden_states = residual + hidden_states
+
+            return hidden_states
+        
+        # type_ = hidden_states.dtype
+
+        # first step is always executed independently of self.max_recurrence
+        hidden_states = step(hidden_states, steps_done=torch.tensor(0, device=hidden_states.device))
+
+        if self.sample_iterations:
+            recurrences = torch.randint(0, self.max_recurrence+1, (1,)).item()
+        else:
+            recurrences = self.max_recurrence
+    
+        for r in range(recurrences):
+            if not self.k_last_recurrence_gradient_backprops == -1:
+                if r < recurrences - self.k_last_recurrence_gradient_backprops:  
+                    hidden_states = hidden_states.detach()
+            hidden_states = step(hidden_states, steps_done=torch.tensor(r+1, device=hidden_states.device))
+
+        return hidden_states#.to(type_)
+                
+        
+
+
+
 
 
 @auto_docstring
@@ -321,9 +532,35 @@ class GPT2Model(GPT2PreTrainedModel):
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        self.layers = nn.ModuleList(
-            [GPT2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
-        )
+        
+        self.blocks_types = config.blocks_types
+        blocks_list = []
+        ith_recursive_block = 0
+        i = 0
+        while i < len(self.blocks_types):
+            if self.blocks_types[i] == "STANDARD":
+                blocks_list.append(GPT2DecoderLayer(config, i))
+                i += 1
+            elif self.blocks_types[i] == "RECURSIVE":
+                blocks_list.append(RecursiveGPT2DecoderLayer(config, i, ith_recursive_block))
+                ith_recursive_block += 1
+                i += 1
+            elif self.blocks_types[i] == "GROUP_RECURSIVE":
+                num_blocks = len(config.recurrent_blocks_indices[ith_recursive_block])
+                gpt2_blocks = []
+                for _ in range(num_blocks):
+                    block = GPT2DecoderLayer(config, i)
+                    gpt2_blocks.append(block)
+                blocks_list.append(GroupRecursiveGPT2DecoderLayer(config, i, ith_recursive_block, gpt2_blocks))
+                ith_recursive_block += 1
+                i += num_blocks
+            else:
+                raise ValueError(f"Unknown block type: {self.blocks_types[i]}")
+        assert i == len(self.blocks_types)
+        self.layers = nn.ModuleList(blocks_list)
+        # self.layers = nn.ModuleList(
+        #     [GPT2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+        # )
         self.norm = nn.LayerNorm(
             config.hidden_size,
             eps=config.layer_norm_eps,
@@ -332,6 +569,12 @@ class GPT2Model(GPT2PreTrainedModel):
         )
         self.rotary_emb = LlamaRotaryEmbedding(config=config)
         self.gradient_checkpointing = False
+
+        if ith_recursive_block > 0: # the model contains at least one recursive layer
+            self.allow_use_cache = False
+            print("The model cannot use 'use_cache'!")
+        else:
+            self.allow_use_cache = True
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -356,9 +599,11 @@ class GPT2Model(GPT2PreTrainedModel):
         past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
+        use_cache: Optional[bool] = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPast:
+        # use_cache = use_cache and self.allow_use_cache
+        
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
@@ -388,8 +633,7 @@ class GPT2Model(GPT2PreTrainedModel):
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
-
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+        for i, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             hidden_states = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask,
@@ -397,6 +641,8 @@ class GPT2Model(GPT2PreTrainedModel):
                 past_key_value=past_key_values,
                 cache_position=cache_position,
                 position_embeddings=position_embeddings,
+                # use_cache=use_cache and self.allow_use_cache
+                use_cache=use_cache,
                 **kwargs,
             )
 
@@ -438,7 +684,7 @@ class GPT2ForCausalLM(GPT2PreTrainedModel, GenerationMixin):
         past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
+        use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         **kwargs: Unpack[TransformersKwargs],
@@ -475,7 +721,7 @@ class GPT2ForCausalLM(GPT2PreTrainedModel, GenerationMixin):
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         logits = self.lm_head(hidden_states[:, slice_indices, :])
-
+    
         loss = None
         if labels is not None:
             loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
