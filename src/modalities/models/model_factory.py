@@ -571,6 +571,7 @@ class GPT2ModelFactory:
         always_propagate_first: bool = False,
         recurrent_blocks_max_recurrences: Optional[Union[int, list[int]]] = None,
         sample_iterations: Optional[bool] = False,
+        use_recurrence_embedding: Optional[bool] = False,
         use_meta_device: Optional[bool] = False,
         seed: int = None,
     ) -> GPT2LLM:
@@ -600,6 +601,7 @@ class GPT2ModelFactory:
             recurrent_blocks_max_recurrences=recurrent_blocks_max_recurrences,
             sample_iterations=sample_iterations,
             always_propagate_first=always_propagate_first,
+            use_recurrence_embedding=use_recurrence_embedding,
         )
         if use_meta_device and use_weight_tying:
             raise ValueError(

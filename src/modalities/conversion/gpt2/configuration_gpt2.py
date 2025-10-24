@@ -181,8 +181,20 @@ class GPT2Config(PretrainedConfig):
         attention_dropout=0.0,
         mlp_bias=False,
         head_dim=None,
+        recurrent_blocks_indices: list[int] = [],
+        sample_iterations: int | None = None,
+        k_last_recurrence_gradient_backprops: int | None = None,
+        recurrent_blocks_max_recurrences: int | None = None,
+        use_recurrence_embedding: bool = False,
         **kwargs,
     ):
+        # recurrent related variables
+        self.recurrent_blocks_indices = recurrent_blocks_indices
+        self.sample_iterations = sample_iterations
+        self.k_last_recurrence_gradient_backprops = k_last_recurrence_gradient_backprops
+        self.recurrent_blocks_max_recurrences = recurrent_blocks_max_recurrences
+        self.use_recurrence_embedding = use_recurrence_embedding
+
         if rms_norm_eps is not None:
             raise ValueError("RMSNorm is not supported in GPT2 model.")
         self.vocab_size = vocab_size
