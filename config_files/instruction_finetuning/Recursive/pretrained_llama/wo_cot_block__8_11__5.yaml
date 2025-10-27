@@ -1,0 +1,71 @@
+eval_device: 1
+datasets:
+- instruction_col: problem
+  is_in_HF: true
+  name: nvidia/OpenMathInstruct-2
+  random_seed: 2000
+  remove_columns:
+  - problem
+  - generated_solution
+  - expected_answer
+  - problem_source
+  response_col: generated_solution
+  split: train_1M
+  test_split_ratio: 0.01
+  weight: 1
+learn_embed: false
+learn_normalization: false
+model_name: meta-llama/Llama-3.2-1B
+new_cache_dir: /raid/s3/opengptx/behzad_shomali/custom_hf_cache/
+preprocess_function: format_openmathinstruct2_only_answer
+random_seed: 2000
+sft:
+  assistant_only_loss: false
+  bf16: true
+  completion_only_loss: false
+  # dataloader_num_workers: 4
+  disable_tqdm: false
+  do_eval: true
+  eval_accumulation_steps: 1
+  eval_on_start: true
+  eval_steps: 500
+  eval_strategy: steps
+  fp16: false
+  gradient_accumulation_steps: 1
+  gradient_checkpointing: true
+  greater_is_better: true
+  # learning_rate: 3.0e-05
+  learning_rate: 2.0e-4
+  load_best_model_at_end: false
+  logging_steps: 20
+  lr_scheduler_type: cosine
+  max_grad_norm: 0.1
+  max_length: 1024
+  metric_for_best_model: eval_sacrebleu
+  num_train_epochs: 1
+  optim: paged_adamw_8bit
+  output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/pretrained_llama/wo_cot_block__8_11__5/
+  packing: true
+  per_device_eval_batch_size: 16
+  per_device_train_batch_size: 2
+  push_to_hub: false
+  report_to: wandb
+  save_only_model: true
+  save_steps: 1000
+  save_strategy: steps
+  tf32: false
+  use_liger_kernel: false
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  save_total_limit: 30
+train_size: 300000
+val_size: 10000
+wandb:
+  project: Llama_Recursive_IT_OpenMathInstruct-2
+  name: wo_cot_block__8_11__5
+
+recursion_settings:
+  type: block
+  start_layer: 8
+  end_layer: 11
+  num_recursions: 5
