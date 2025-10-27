@@ -7,6 +7,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 from utils import load_config
+from recursive_llama.utils import add_block_recursion_to_llama, add_recursion_to_llama
 
 
 
@@ -174,6 +175,26 @@ except:
         # max_memory={0: "81GiB", 1: "0GiB"}
     )
 
+if "llama" in model_name:
+    recursion_config = config["recursion_settings"]
+    if recursion_config["type"] == "block":
+        model = add_block_recursion_to_llama(
+            model,
+            start_layer=recursion_config["start_layer"],     
+            end_layer=recursion_config["end_layer"],     
+            num_recursions=recursion_config["num_recursions"]
+        )
+    elif recursion_config["type"] == "layer":
+        model = add_recursion_to_llama(
+            model,
+            layer_indices=recursion_config["layer_indices"],
+            num_recursions=recursion_config["num_recursions"]
+        )
+    else:
+        raise ValueError("The recursion type must be from [layer/block]")
+
+
+
 print_trainable_params(model)
 if tokenizer.chat_template is None:
     model, tokenizer = setup_chat_format(model, tokenizer)
@@ -215,10 +236,10 @@ print_trainable_params(model)
 
 model.config.use_cache = False
 
-if "recursion_settings" in config and config["recursion_settings"]["overwrite_recursions"]:
-    for i, idx in enumerate(config["recursion_settings"]["recursion_indices"]):
-        model.model.layers[idx].max_recurrence = config["recursion_settings"]["iterations_num"][i]
-    print("The max_recursions have been overwritten!")
+# if "recursion_settings" in config and config["recursion_settings"]["overwrite_recursions"]:
+#     for i, idx in enumerate(config["recursion_settings"]["recursion_indices"]):
+#         model.model.layers[idx].max_recurrence = config["recursion_settings"]["iterations_num"][i]
+#     print("The max_recursions have been overwritten!")
 
 trainer = SFTTrainer(
     model=model,
@@ -229,9 +250,9 @@ trainer = SFTTrainer(
     compute_metrics=compute_metrics,
     preprocess_logits_for_metrics=preprocess_logits_for_metrics,
     # callbacks=[LightEvalCallback(cuda_devices="3", output_dir=config['sft']['output_dir'])]
-    callbacks=[SavePeftModelCallback(), EvalCallback(eval_gpu=config["eval_device"], source_model_path=config['model_name'], hf_home=config['new_cache_dir'])]
+    callbacks=[SavePeftModelCallback()]
 )
-# EvalCallback(eval_gpu=config["eval_device"], source_model_path=config['model_name'], hf_home=config['new_cache_dir'])
+# , EvalCallback(eval_gpu=config["eval_device"], source_model_path=config['model_name'], hf_home=config['new_cache_dir'], **config)
 # trainer.model.print_trainable_parameters()
 
 try:

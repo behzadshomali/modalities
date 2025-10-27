@@ -4,6 +4,8 @@ import torch
 import shutil
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from recursive_llama.utils import add_block_recursion_to_llama, add_recursion_to_llama
+
 from peft import PeftModel
 from trl import setup_chat_format
 from huggingface_hub import HfApi
@@ -43,6 +45,27 @@ def merge_lora_adapter(
         device_map="auto",
         trust_remote_code=True
     )
+
+    if "llama" in base_model:
+        print("X"*10, "Llama model has been modified!", "X"*10)
+        recursion_config = kwargs_HF["recursion_settings"]
+        if recursion_config["type"] == "block":
+            model = add_block_recursion_to_llama(
+                model,
+                start_layer=recursion_config["start_layer"],     
+                end_layer=recursion_config["end_layer"],     
+                num_recursions=recursion_config["num_recursions"]
+            )
+        elif recursion_config["type"] == "layer":
+            model = add_recursion_to_llama(
+                model,
+                layer_indices=recursion_config["layer_indices"],
+                num_recursions=recursion_config["num_recursions"]
+            )
+        else:
+            raise ValueError("The recursion type must be from [layer/block]")
+
+
 
     if tokenizer.chat_template is None:
         model, tokenizer = setup_chat_format(model, tokenizer)

@@ -115,13 +115,32 @@ def load_config(config_path, overwrite_config=True):
 
 
     wandb_name = f"ga{args['sft']['gradient_accumulation_steps']}-lr{args['sft']['learning_rate']}-wd{args['sft']['weight_decay']}-mgn{args['sft']['max_grad_norm']}"
-    if "peft" in args:
-        wandb_name += f"-lora{args['peft']['r']}"
+    
 
-    if "recursion_settings" in args and args["recursion_settings"]["overwrite_recursions"]:
-        wandb_name = f"new_rec{args['recursion_settings']['iterations_num']}" + wandb_name
+    if "recursion_settings" in args:
+        recursion_str = ""
+        for k, v in args["recursion_settings"].items():
+            if k == "start_layer":
+                k = "beg"
+            elif k == "end_layer":
+                k = "end"
+            elif k == "num_recursions":
+                k = "num"
+            elif k == "layer_indices":
+                k = "layers"
+            elif k == "type":
+                k = ""
+            elif k == "sample_random_recursion":
+                k = "RAND_SAMPLE"
+            else:
+                raise ValueError(f"{k} is not valid!")
+
+            recursion_str += f"{k}{v}-"
+        wandb_name = f"{recursion_str}" + wandb_name
 
     args['wandb']['name'] = wandb_name + args['wandb'].get("name", "")
+    if "peft" in args:
+        wandb_name += f"-lora{args['peft']['r']}"
 
 
     # if overwrite_config:
@@ -262,6 +281,7 @@ class WandbOffsetCallback(TrainerCallback):
 
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 
@@ -318,7 +338,13 @@ def merge_peft_model(peft_path: str, base_model_path: str, output_dir: str) -> b
 
 
 def run_lighteval_cli(
-    checkpoint_path: str, step: int, eval_gpu: int, source_model_path: str, eval_tasks: str, hf_home: str = "/raid/s3/opengptx/mfrey/huggingface"
+    checkpoint_path: str, 
+    step: int, 
+    eval_gpu: int, 
+    source_model_path: str, 
+    eval_tasks: str, 
+    hf_home: str = "/raid/s3/opengptx/mfrey/huggingface",
+    **kwargs
 ) -> Optional[Dict[str, Any]]:
     """Run LightEval CLI evaluation and return results."""
     rand_int = random.randint(1000, 100000)
@@ -341,7 +367,7 @@ def run_lighteval_cli(
                 logger.info("PEFT model detected, merging with base model...")
                 merged_dir = os.path.join(checkpoint_path, "lora_merged")
                 if not os.path.exists(merged_dir):
-                    if not merge_lora_adapter(checkpoint_path, source_model_path):
+                    if not merge_lora_adapter(checkpoint_path, source_model_path, **kwargs):
                         return None
                 else:
                     logger.info(f"Using existing merged model at {merged_dir}")
@@ -454,7 +480,8 @@ class AsyncEvaluator:
             eval_gpu: int, 
             source_model_path: str, 
             eval_tasks: str,
-            hf_home: str = "/raid/s3/opengptx/mfrey/huggingface"
+            hf_home: str = "/raid/s3/opengptx/mfrey/huggingface",
+            **kwargs
         ):
         self.hf_home = hf_home
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
@@ -462,6 +489,7 @@ class AsyncEvaluator:
         self.eval_gpu = eval_gpu
         self.source_model_path = source_model_path
         self.eval_tasks = eval_tasks
+        self.kwargs = kwargs
 
         # Setup WandB metrics when evaluator is created
         setup_wandb_metrics()
@@ -470,7 +498,7 @@ class AsyncEvaluator:
         """Submit an evaluation job."""
 
         def eval_and_log(eval_step, eval_checkpoint_path):
-            results = run_lighteval_cli(eval_checkpoint_path, eval_step, self.eval_gpu, self.source_model_path, self.eval_tasks, self.hf_home)
+            results = run_lighteval_cli(eval_checkpoint_path, eval_step, self.eval_gpu, self.source_model_path, self.eval_tasks, self.hf_home, **self.kwargs)
             if results:
                 return parse_and_log_results(results, eval_step)
             return {}
@@ -519,7 +547,7 @@ class AsyncEvaluator:
 class EvalCallback(TrainerCallback):
     """Callback to trigger async LightEval CLI on checkpoint saves and at training start."""
 
-    def __init__(self, eval_gpu: int, source_model_path: str, hf_home: str):
+    def __init__(self, eval_gpu: int, source_model_path: str, hf_home: str, **kwargs):
         self.eval_gpu = eval_gpu
         self.source_model_path = source_model_path
         self.hf_home = hf_home
@@ -529,6 +557,7 @@ class EvalCallback(TrainerCallback):
             source_model_path=source_model_path,
             eval_tasks="leaderboard|gsm8k|8|1,leaderboard|hellaswag|5|1",
             hf_home=hf_home,
+            **kwargs
         )
 
     def on_train_begin(self, args, state, control, **kwargs):
