@@ -7,13 +7,13 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 from utils import load_config
-from recursive_llama.utils import add_block_recursion_to_llama, add_recursion_to_llama
 
+from transformers import LlamaForCausalLM, AutoTokenizer, GenerationConfig, LlamaConfig
+from recursive_llama2.recursive_llama import RecursiveLlamaConfig, RecursiveLlamaForCausalLM
 
 
 config_path = sys.argv[1]
 config = load_config(config_path).copy()
-
 
 
 
@@ -22,7 +22,17 @@ import shutil
 import json
 
 
-from utils import load_config, clean_coda_alpaca, print_trainable_params, transform, SavePeftModelCallback, WandbOffsetCallback, set_cache_dirs, EvalCallback
+from utils import (
+    load_config, 
+    clean_coda_alpaca, 
+    print_trainable_params, 
+    transform, 
+    SavePeftModelCallback, 
+    WandbOffsetCallback, 
+    set_cache_dirs, 
+    EvalCallback, 
+    DiagnosticCallback
+)
 
 set_cache_dirs(new_cache_dir=config["new_cache_dir"])
 
@@ -40,7 +50,7 @@ from peft import LoraConfig, get_peft_model
 
 import evaluate
 
-print("!"*20, "# visible devices:", torch.cuda.device_count(), "!"*20)
+print("!"*20, "visible devices:", os.environ["CUDA_VISIBLE_DEVICES"], "!"*20)
 
 
 sacrebleu = evaluate.load("sacrebleu")
@@ -177,21 +187,49 @@ except:
 
 if "llama" in model_name:
     recursion_config = config["recursion_settings"]
-    if recursion_config["type"] == "block":
-        model = add_block_recursion_to_llama(
-            model,
-            start_layer=recursion_config["start_layer"],     
-            end_layer=recursion_config["end_layer"],     
-            num_recursions=recursion_config["num_recursions"]
-        )
-    elif recursion_config["type"] == "layer":
-        model = add_recursion_to_llama(
-            model,
-            layer_indices=recursion_config["layer_indices"],
-            num_recursions=recursion_config["num_recursions"]
-        )
-    else:
-        raise ValueError("The recursion type must be from [layer/block]")
+    RECURSION_START = recursion_config["start_layer"]
+    RECURSION_END = recursion_config["end_layer"]
+    NUM_RECURSIONS = recursion_config["num_recursions"]
+
+    del model
+    base_model= LlamaForCausalLM.from_pretrained(config["model_name"])
+
+    recursive_llama_config = RecursiveLlamaConfig(
+        model_name=config["model_name"],
+        recursion_start_layer=RECURSION_START,
+        recursion_end_layer=RECURSION_END,
+        num_recursions=NUM_RECURSIONS,
+        track_diagnostics=recursion_config["track_diagnostics"]
+    )
+
+    model = RecursiveLlamaForCausalLM(recursive_llama_config) 
+
+    print("Copying weights...")
+
+    # Embeddings and final normalization
+    model.model.embed_tokens.load_state_dict(base_model.model.embed_tokens.state_dict())
+    model.model.norm.load_state_dict(base_model.model.norm.state_dict())
+    model.lm_head.load_state_dict(base_model.lm_head.state_dict())
+
+    # Layers BEFORE the block
+    model.model.layers[:RECURSION_START].load_state_dict(
+        base_model.model.layers[:RECURSION_START].state_dict()
+    )
+
+    # Layers INTO the block
+    # model.model.layers[RECURSION_START] is our BlockRecursiveModule
+    model.model.layers[RECURSION_START].layer_block.load_state_dict(
+        base_model.model.layers[RECURSION_START : RECURSION_END + 1].state_dict()
+    )
+
+    # Layers AFTER the block
+    # The new index is RECURSION_START + 1
+    # The original index is RECURSION_END + 1
+    model.model.layers[RECURSION_START + 1 :].load_state_dict(
+        base_model.model.layers[RECURSION_END + 1 :].state_dict()
+    )
+
+    print("Weight copy complete.")
 
 
 
@@ -234,12 +272,21 @@ if "peft" in config:
     
 print_trainable_params(model)
 
-model.config.use_cache = False
 
-# if "recursion_settings" in config and config["recursion_settings"]["overwrite_recursions"]:
-#     for i, idx in enumerate(config["recursion_settings"]["recursion_indices"]):
-#         model.model.layers[idx].max_recurrence = config["recursion_settings"]["iterations_num"][i]
-#     print("The max_recursions have been overwritten!")
+callbacks = []
+if config["recursion_settings"]["track_diagnostics"]:
+    start_layer = config["recursion_settings"]["start_layer"]
+    diagnostic_callback = DiagnosticCallback(
+        block_module=model.model.layers[start_layer],
+        output_dir=os.path.join(config["sft"]["output_dir"], "diagnostic"),
+        save_to_file=True
+    )
+    callbacks.append(diagnostic_callback)
+
+if "eval_device" in config:
+    eval_callback = EvalCallback(eval_gpu=config["eval_device"], source_model_path=config['model_name'], hf_home=config['new_cache_dir'])
+    callbacks.append(eval_callback)
+
 
 trainer = SFTTrainer(
     model=model,
@@ -249,11 +296,8 @@ trainer = SFTTrainer(
     args=sft_args,
     compute_metrics=compute_metrics,
     preprocess_logits_for_metrics=preprocess_logits_for_metrics,
-    # callbacks=[LightEvalCallback(cuda_devices="3", output_dir=config['sft']['output_dir'])]
-    callbacks=[SavePeftModelCallback()]
+    callbacks=callbacks,
 )
-# , EvalCallback(eval_gpu=config["eval_device"], source_model_path=config['model_name'], hf_home=config['new_cache_dir'], **config)
-# trainer.model.print_trainable_parameters()
 
 try:
     trainer.train(config.get("resume_from_checkpoint", False))
