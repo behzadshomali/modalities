@@ -1,0 +1,7 @@
+from .configuration_recursive_llama import RecursiveLlamaConfig
+from .modeling_recursive_llama import RecursiveLlamaForCausalLM
+
+from transformers import AutoConfig, AutoModelForCausalLM
+
+AutoConfig.register("recursive_llama", RecursiveLlamaConfig)
+AutoModelForCausalLM.register(RecursiveLlamaConfig, RecursiveLlamaForCausalLM)
