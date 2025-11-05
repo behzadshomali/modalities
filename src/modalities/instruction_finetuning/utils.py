@@ -131,8 +131,12 @@ def load_config(config_path, overwrite_config=True):
             elif k == "type":
                 k = ""
             elif k == "sample_random_recursion":
-                k = "RAND_SAMPLE"
-            else:
+                k = "RAND"
+            elif k == "track_diagnostics":
+                k = "track"
+            elif k == "neft_alpha":
+                k = ""
+            elif k not in ["neft"]:
                 raise ValueError(f"{k} is not valid!")
 
             recursion_str += f"{k}{v}-"
@@ -277,6 +281,81 @@ class WandbOffsetCallback(TrainerCallback):
         if logs:
             wandb.log(logs, step=state.global_step + self.step_offset)
 
+class DiagnosticCallback(TrainerCallback):
+    def __init__(self, block_module, output_dir, log_frequency=1, save_to_file=True):
+        super().__init__()
+        self.log_frequency = log_frequency
+        self.block_module = block_module
+        self.step_counter = 0
+        self.save_to_file = save_to_file
+        self.output_dir = output_dir
+        file_name = f'{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.csv'
+        self.cosine_file_name = os.path.join(output_dir, f"cosine_{file_name}")
+        self.grad_file_name = os.path.join(output_dir, f"grad_{file_name}")
+
+        if not os.path.exists(self.output_dir):
+            os.mkdir(self.output_dir)
+
+        with open(self.cosine_file_name, 'w') as f:
+            f.write(f"global_step,iteration,mean,min,max,std\n")
+        
+        with open(self.grad_file_name, 'w') as f:
+            f.write(f"global_step,step,layer,layer_name,is_recurrent,iteration,norm,mean,max,std\n")
+
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        self.step_counter += 1
+        
+        # Determine if we should log this step
+        should_log = False
+        should_log = (self.step_counter % self.log_frequency == 0)
+        
+        if should_log and self.block_module is not None:
+            # print(f"\n{'='*70}")
+            # print(f"Diagnostics at Step {state.global_step}")
+            # print(f"{'='*70}")
+            # self.block_module.print_diagnostics()
+            
+            # Save to file if requested
+            if self.save_to_file:
+                self._save_diagnostics_to_file(state.global_step)
+
+    def _save_diagnostics_to_file(self, global_step):
+        """Save diagnostics to CSV file."""
+        diagnostics = self.block_module.get_diagnostics()
+
+        with open(self.cosine_file_name, 'a') as f:
+            # Write cosine similarities
+            for sim in diagnostics.get('cosine_similarities', []):
+                f.write(f"{global_step},{sim['iteration']},{sim['mean']:.6f},")
+                f.write(f"{sim['min']:.6f},{sim['max']:.6f},{sim['std']:.6f}\n")
+            
+            self.block_module.cosine_similarities = []
+                
+        
+        with open(self.grad_file_name, 'a') as f:
+            grad_info = diagnostics.get('gradient_history', [{}])
+            if grad_info == []:
+                grad_info = [{}]
+            for grad in grad_info:
+                f.write(f"{global_step:7d},")
+                f.write(f"{grad.get('step', 0):7d},")
+                f.write(f"{grad.get('layer', 0):1d},")
+                f.write(f"{grad.get('layer_name', )},")
+                f.write(f"{grad.get('is_recurrent', False)},")
+                f.write(f"{grad.get('iteration', 0):1d},")
+                f.write(f"{grad.get('grad_norm', 0):.6f},")
+                f.write(f"{grad.get('grad_mean', 0):.6f},")
+                f.write(f"{grad.get('grad_max', 0):.6f},")
+                f.write(f"{grad.get('grad_std', 0):.6f}\n")
+            
+            self.block_module.gradient_history = []
+
+        print("The results saved to:")
+        print(self.cosine_file_name)
+        print(self.grad_file_name)
+
+
 
 
 
@@ -379,7 +458,7 @@ def run_lighteval_cli(
                 "use_chat_template=True,"
                 "trust_remote_code=True,"
                 "batch_size=16,"
-                'generation_parameters={"use_cache": false}'
+                # 'generation_parameters={"use_cache": false}'
             )
             cmd_string = (
                 f"lighteval accelerate "
@@ -563,18 +642,36 @@ class EvalCallback(TrainerCallback):
     def on_train_begin(self, args, state, control, **kwargs):
         """Run initial evaluation on the base model at step 0."""
         logger.info("🔍 Running initial evaluation on base model at step 0...")
-        self.evaluator.submit_evaluation(self.source_model_path, step=0)
+        # self.evaluator.submit_evaluation(self.source_model_path, step=0)
 
     def on_save(self, args, state, control, **kwargs):
         """Trigger evaluation when checkpoint is saved."""
 
         checkpoint_path = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
         
-        # manually copy the modeling_gpt2.py file
-        src_path = "/raid/s3/opengptx/behzad_shomali/modalities/src/modalities/conversion/gpt2/modeling_gpt2.py"
-        dst_path = os.path.join(checkpoint_path, "modeling_gpt2.py")
+        # # manually copy the modeling_gpt2.py file
+        # src_path = "/raid/s3/opengptx/behzad_shomali/modalities/src/modalities/conversion/gpt2/modeling_gpt2.py"
+        # dst_path = os.path.join(checkpoint_path, "modeling_gpt2.py")
 
+        # shutil.copy(src_path, dst_path)
+
+        # manually copy the modeling_recursive_llama.py file
+        src_path = "/raid/s3/opengptx/behzad_shomali/modalities/src/recursive_llama2/recursive_llama.py"
+        dst_path = os.path.join(checkpoint_path, "modeling_recursive_llama.py")
         shutil.copy(src_path, dst_path)
+
+        config_path = os.path.join(checkpoint_path, "config.json")
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        
+        config['auto_map'] = {
+            'AutoConfig': 'modeling_recursive_llama.RecursiveLlamaConfig',
+            'AutoModelForCausalLM': 'modeling_recursive_llama.RecursiveLlamaForCausalLM',
+        }
+        
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+
         
         if os.path.exists(checkpoint_path):
             logger.info(f"💾 Checkpoint saved at step {state.global_step}, triggering evaluation...")
