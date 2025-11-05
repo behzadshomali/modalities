@@ -1,4 +1,4 @@
-eval_device: 4
+# eval_device: 4
 datasets:
 - instruction_col: problem
   is_in_HF: true
@@ -27,7 +27,7 @@ sft:
   disable_tqdm: false
   do_eval: true
   eval_accumulation_steps: 1
-  eval_on_start: true
+  eval_on_start: false
   eval_steps: 500
   eval_strategy: steps
   fp16: false
@@ -44,30 +44,30 @@ sft:
   metric_for_best_model: eval_sacrebleu
   num_train_epochs: 1
   optim: paged_adamw_8bit
-  output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/pretrained_llama/block__8_11__3/
+  output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/pretrained_llama/dummy/
   packing: false
   per_device_eval_batch_size: 8
-  per_device_train_batch_size: 8
+  per_device_train_batch_size: 10
   push_to_hub: false
   report_to: wandb
   save_only_model: true
-  save_steps: 500
+  save_steps: 50  
   save_strategy: steps
   tf32: false
   use_liger_kernel: false
   warmup_ratio: 0.1
   weight_decay: 0.01
   save_total_limit: 30
-train_size: 300000
-val_size: 10000
+train_size: 50000
+val_size: 100
 wandb:
   project: Llama_Recursive_IT_OpenMathInstruct-2
-  name: block__8_11__3
+  name: DUMMY
 
 recursion_settings:
   type: block
   start_layer: 8
-  end_layer: 11
-  num_recursions: 3
+  end_layer: 8
+  num_recursions: 1
   sample_random_recursion: false
   track_diagnostics: false
