@@ -171,3 +171,6 @@ config_files/instruction_tuning
 data/lorem_ipsum_instruct.jsonl
 
 Eurolingua_tokenizer/*
+
+results/*
+src/modalities/notebooks/figures/*
