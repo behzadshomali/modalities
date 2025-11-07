@@ -7,25 +7,88 @@ from transformers.models.llama.modeling_llama import (
     LlamaDecoderLayer, 
     LlamaPreTrainedModel, 
     LlamaRMSNorm,
-    # 1. Import the necessary Llama components
     LlamaRotaryEmbedding, 
     LlamaAttention, 
     LlamaMLP 
 )
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.utils import TransformersKwargs
-from transformers.cache_utils import DynamicCache, Cache
+from transformers.cache_utils import DynamicCache, Cache, DynamicLayer
 from transformers.masking_utils import create_causal_mask
-from typing import List, Optional, Tuple, Union, Unpack
+from typing import Any, List, Optional, Tuple, Union, Unpack
+
+
+class CustomDynamicLayer(DynamicLayer):
+    """
+    Same as DynamicLayer but with a custom `update` method.
+    """
+
+    should_update_cache: bool = True
+    current_iteration: int = 0
+    keys_per_iteration: List[torch.Tensor] = []
+    values_per_iteration: List[torch.Tensor] = []
+
+    def lazy_initialization(self, key_states: torch.Tensor):
+        self.dtype, self.device = key_states.dtype, key_states.device
+        self.keys = torch.tensor([], dtype=self.dtype, device=self.device)
+        self.values = torch.tensor([], dtype=self.dtype, device=self.device)
+        self.keys_per_iteration = [torch.tensor([], dtype=self.dtype, device=self.device) for _ in range(10)]  # max 10 recursions
+        self.values_per_iteration = [torch.tensor([], dtype=self.dtype, device=self.device) for _ in range(10)]
+        self.is_initialized = True
+    
+
+    def update(
+        self,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor,
+        cache_kwargs: Optional[dict[str, Any]] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Update (on-demand) the key and value caches in-place, and return the necessary keys and value states.
+
+        Args:
+            key_states (`torch.Tensor`): The new key states to cache.
+            value_states (`torch.Tensor`): The new value states to cache.
+            cache_kwargs (`dict[str, Any]`, *optional*): Additional arguments for the cache.
+
+        Returns:
+            tuple[`torch.Tensor`, `torch.Tensor`]: The key and value states.
+        """
+        # Lazy initialization
+        if not self.is_initialized:
+            self.lazy_initialization(key_states)
+
+        if key_states.shape == torch.Size([1, 32, 1, 64]):
+            pass
+        if self.should_update_cache:
+            self.keys_per_iteration[self.current_iteration] = torch.cat(
+                [self.keys_per_iteration[self.current_iteration], key_states], dim=-2
+            )
+            self.values_per_iteration[self.current_iteration] = torch.cat(
+                [self.values_per_iteration[self.current_iteration], value_states], dim=-2
+            )
+            self.keys = self.keys_per_iteration[self.current_iteration]
+            self.values = self.values_per_iteration[self.current_iteration]
+
+            return self.keys, self.values
+        else:
+            # If not updating the cache, just return the new states
+            # return torch.cat([self.keys_per_iteration[self.current_iteration], key_states], dim=-2), torch.cat([self.values_per_iteration[self.current_iteration], value_states], dim=-2)
+            k = torch.cat([self.keys_per_iteration[self.current_iteration], key_states], dim=-2)
+            v = torch.cat([self.values_per_iteration[self.current_iteration], value_states], dim=-2)
+            return k, v
 
 
 class BlockRecursiveModule(nn.Module):
-    def __init__(self, layer_block, num_recursions, sample_random_recursion, track_diagnostics):
+    def __init__(self, layer_block, num_recursions, sample_random_recursion, track_diagnostics, neft=False, neft_alpha=None):
         super().__init__()
         self.layer_block = layer_block
         self.num_recursions = num_recursions
         self.sample_random_recursion = sample_random_recursion
         self.track_diagnostics = track_diagnostics
+        self.neft = neft
+        self.neft_alpha = neft_alpha
+        self.is_cache_class_overwritten = [False] * len(layer_block)
         if track_diagnostics:
             self.gradient_history = []
             self.cosine_similarities = []
@@ -36,6 +99,35 @@ class BlockRecursiveModule(nn.Module):
         t2 = tensor2.reshape(-1, tensor2.shape[-1])
         cos_sim = F.cosine_similarity(t1, t2, dim=-1)
         return cos_sim
+
+    def _overwrite_cache_class(self, layer, past_key_values, new_layer_idx):
+        original_layer_idx = layer.self_attn.layer_idx
+        if not isinstance(past_key_values.layers[original_layer_idx], CustomDynamicLayer):
+            # Replace with CustomDynamicLayer
+            original_cache = past_key_values.layers[original_layer_idx]
+            if past_key_values[original_layer_idx] != (None, None):
+                raise ValueError(f"Expected None cache at layer {original_layer_idx} before overwriting, got non-None.")
+            new_cache = CustomDynamicLayer()
+            past_key_values.layers[original_layer_idx] = new_cache
+            print(f"Overwritten cache class for layer {original_layer_idx} to CustomDynamicLayer.")
+            self.is_cache_class_overwritten[new_layer_idx] = True
+
+    def _set_should_update_cache(self, layer, past_key_values, flag: bool):
+        original_layer_idx = layer.self_attn.layer_idx
+        if isinstance(past_key_values.layers[original_layer_idx], CustomDynamicLayer):
+            past_key_values.layers[original_layer_idx].should_update_cache = flag
+        else:
+            raise ValueError(f"Cache for layer {original_layer_idx} is not a CustomDynamicLayer.")
+
+    def _set_current_iteration(self, layer, past_key_values, iteration_idx: int):
+        original_layer_idx = layer.self_attn.layer_idx
+        if isinstance(past_key_values.layers[original_layer_idx], CustomDynamicLayer):
+            past_key_values.layers[original_layer_idx].current_iteration = iteration_idx
+        else:
+            raise ValueError(f"Cache for layer {original_layer_idx} is not a CustomDynamicLayer.")
+        
+    def set_num_recursions(self, num_recursions: int):
+        self.num_recursions = num_recursions
 
     def forward(
         self,
@@ -62,27 +154,77 @@ class BlockRecursiveModule(nn.Module):
 
         # all_present_key_values = past_key_values  # initial cache
         for iteration in range(num_recursions):
+
             is_final = (iteration == num_recursions - 1)
 
             all_present_key_values = past_key_values if is_final else None
+            # print("Iteration:", iteration, "is_final:", is_final)
+            for i, layer in enumerate(self.layer_block):
+                if past_key_values is not None:
+                    original_layer_idx = layer.self_attn.layer_idx
+                    if not isinstance(past_key_values.layers[original_layer_idx], CustomDynamicLayer):
+                        if past_key_values[original_layer_idx] == (None, None):
+                            self._overwrite_cache_class(layer, past_key_values, i)
+                        else:
+                            raise ValueError(f"Expected None cache at layer {original_layer_idx} before overwriting, got non-None.")
+                
+                if past_key_values is not None:
+                    self._set_should_update_cache(layer, past_key_values, True)
+                    self._set_current_iteration(layer, past_key_values, iteration_idx=iteration)
 
-            for layer in self.layer_block:
-                print(f"XXX Input to iteration {iteration}:")
-                # let every layer update the *same* cache object
                 hidden_states = layer(
                     hidden_states,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
-                    past_key_values=all_present_key_values,
-                    use_cache=is_final,          # write only in last iteration
+                    past_key_values=past_key_values,
+                    # use_cache=is_final,          # write only in last iteration
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
                     **kwargs
                 )
 
+                if self.neft and self.training:
+                    alpha = self.neft_alpha
+                    L = hidden_states.shape[-2]
+                    d = hidden_states.shape[-1]
+                    noise = torch.rand_like(hidden_states) * 2 -1 # range: [-1,1]
+                    scaled_noise = noise * alpha / ((L*d)**0.5)
+                    hidden_states = hidden_states + scaled_noise
+
+                # if self.track_diagnostics and hidden_states.requires_grad and self.training:
+                #     def make_grad_hook(layer_idx, iteration_idx):
+                #         def grad_hook(grad):
+                #             self.gradient_history.append({
+                #                 'layer_name': layer_name,
+                #                 'is_recurrent': True,
+                #                 'iteration': iteration_idx,
+                #                 'step': self.step_count,
+                #                 'grad_norm': grad.norm().item(),
+                #                 'grad_mean': grad.mean().item(),
+                #                 'grad_std': grad.std().item(),
+                #                 'grad_max': grad.abs().max().item()
+                #             })
+                #             self.step_count += 1
+                #             return grad
+                #         return grad_hook
+                #     hidden_states.register_hook(make_grad_hook(layer_idx, iteration))
+
+            if self.track_diagnostics and self.training:
+                current_activation = hidden_states.detach().clone()
+                cos_sim = self.compute_cosine_similarity(prev_hidden_states, current_activation)
+                self.cosine_similarities.append({
+                    'iteration': iteration,
+                    'mean': cos_sim.mean().item(),
+                    'min': cos_sim.min().item(),
+                    'max': cos_sim.max().item(),
+                    'std': cos_sim.std().item(),
+                })
+                prev_hidden_states = current_activation
+
+
         # return exactly what a normal decoder layer would return
         if use_cache:
-            return hidden_states, all_present_key_values
+            return hidden_states, past_key_values
         else:
             return hidden_states
 
@@ -124,6 +266,8 @@ class RecursiveLlamaConfig(LlamaConfig):
         original_num_hidden_layers=None, # Default to None
         sample_random_recursion=False,
         track_diagnostics=False,
+        neft=False,
+        neft_alpha=None,
         **kwargs,
     ):
 
@@ -173,6 +317,8 @@ class RecursiveLlamaConfig(LlamaConfig):
         self.num_recursions = num_recursions
         self.sample_random_recursion = sample_random_recursion
         self.track_diagnostics = track_diagnostics
+        self.neft = neft
+        self.neft_alpha = neft_alpha
 
 
 
@@ -211,7 +357,9 @@ class RecursiveLlamaModel(LlamaModel):
             layer_block=layer_block,
             num_recursions=config.num_recursions,
             sample_random_recursion=config.sample_random_recursion,
-            track_diagnostics=config.track_diagnostics
+            track_diagnostics=config.track_diagnostics,
+            neft=config.neft,
+            neft_alpha=config.neft_alpha
         ))
         
         # 3. Add layers *after* the block
@@ -320,5 +468,5 @@ class RecursiveLlamaForCausalLM(LlamaForCausalLM):
         self.post_init()
 
 
-# AutoConfig.register("recursive-llama", RecursiveLlamaConfig)
-# AutoModelForCausalLM.register(RecursiveLlamaConfig, RecursiveLlamaForCausalLM)
+AutoConfig.register("recursive-llama", RecursiveLlamaConfig)
+AutoModelForCausalLM.register(RecursiveLlamaConfig, RecursiveLlamaForCausalLM)
