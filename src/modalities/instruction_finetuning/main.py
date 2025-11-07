@@ -31,7 +31,8 @@ from utils import (
     WandbOffsetCallback, 
     set_cache_dirs, 
     EvalCallback, 
-    DiagnosticCallback
+    DiagnosticCallback,
+    GraduallyIncreaseRecursionsCallback
 )
 
 set_cache_dirs(new_cache_dir=config["new_cache_dir"])
@@ -166,24 +167,14 @@ print("Val size:", len(final_val_dataset))
 
 
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-try:
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, 
-        trust_remote_code=True, 
-        torch_dtype="auto",
-        device_map="auto",
-        attn_implementation="flash_attention_2",
-        # max_memory={0: "81GiB", 1: "0GiB"}
-    )
-except:
-    print("flash_attention_2 is not available!")
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, 
-        trust_remote_code=True, 
-        torch_dtype="auto",
-        device_map="auto",
-        # max_memory={0: "81GiB", 1: "0GiB"}
-    )
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_name, 
+    trust_remote_code=True, 
+    torch_dtype="auto",
+    device_map="auto",
+    # max_memory={0: "81GiB", 1: "0GiB"}
+)
 
 if "llama" in model_name:
     recursion_config = config["recursion_settings"]
@@ -199,7 +190,9 @@ if "llama" in model_name:
         recursion_start_layer=RECURSION_START,
         recursion_end_layer=RECURSION_END,
         num_recursions=NUM_RECURSIONS,
-        track_diagnostics=recursion_config["track_diagnostics"]
+        track_diagnostics=recursion_config["track_diagnostics"],
+        neft=recursion_config.get("neft", False),
+        neft_alpha=recursion_config.get("neft_alpha", None)
     )
 
     model = RecursiveLlamaForCausalLM(recursive_llama_config) 
@@ -286,6 +279,16 @@ if config["recursion_settings"]["track_diagnostics"]:
 if "eval_device" in config:
     eval_callback = EvalCallback(eval_gpu=config["eval_device"], source_model_path=config['model_name'], hf_home=config['new_cache_dir'])
     callbacks.append(eval_callback)
+
+if config["recursion_settings"].get("gradually_increase_recursions", False):
+    gradually_increase_callback = GraduallyIncreaseRecursionsCallback(
+        block_module=model.model.layers[RECURSION_START],
+        start_recursions=1,
+        max_recursions=NUM_RECURSIONS,
+        increase_steps=config["recursion_settings"].get("increase_steps", None),
+        increase_every_n_steps=config["recursion_settings"].get("increase_every_n_steps", None),
+    )
+    callbacks.append(gradually_increase_callback)
 
 
 trainer = SFTTrainer(

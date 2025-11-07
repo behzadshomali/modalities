@@ -4,7 +4,7 @@ from transformers import TrainerCallback
 import json
 from datetime import datetime
 import wandb
-from typing import Dict, Any
+from typing import Dict, Any, Union
 from merge_lora import merge_lora_adapter
 
 import shutil 
@@ -136,6 +136,10 @@ def load_config(config_path, overwrite_config=True):
                 k = "track"
             elif k == "neft_alpha":
                 k = ""
+            elif k == "gradually_increase_recursions":
+                k = "gradual"
+            elif k == "increase_steps":
+                k = "incs"
             elif k not in ["neft"]:
                 raise ValueError(f"{k} is not valid!")
 
@@ -458,13 +462,14 @@ def run_lighteval_cli(
                 "use_chat_template=True,"
                 "trust_remote_code=True,"
                 "batch_size=16,"
-                # 'generation_parameters={"use_cache": false}'
+                'generation_parameters={"temperature": 0.00001, "max_new_tokens": 1024}'
             )
             cmd_string = (
                 f"lighteval accelerate "
                 f'"{model_args}" '
                 f'"{eval_tasks}" '
                 f"--max-samples 100 "
+                "--save-details "
             )
             env = os.environ.copy()
             env["CUDA_VISIBLE_DEVICES"] = str(eval_gpu)
@@ -642,7 +647,7 @@ class EvalCallback(TrainerCallback):
     def on_train_begin(self, args, state, control, **kwargs):
         """Run initial evaluation on the base model at step 0."""
         logger.info("🔍 Running initial evaluation on base model at step 0...")
-        # self.evaluator.submit_evaluation(self.source_model_path, step=0)
+        self.evaluator.submit_evaluation(self.source_model_path, step=0)
 
     def on_save(self, args, state, control, **kwargs):
         """Trigger evaluation when checkpoint is saved."""
@@ -682,3 +687,41 @@ class EvalCallback(TrainerCallback):
     def on_train_end(self, args, state, control, **kwargs):
         """Wait for all evaluations to complete."""
         self.evaluator.wait_for_completion()
+
+
+
+class GraduallyIncreaseRecursionsCallback(TrainerCallback):
+    """Callback to gradually increase the number of recursions during training."""
+
+    def __init__(self, block_module, start_recursions: int, max_recursions: int, increase_steps: list = None, increase_every_n_steps: int = None):
+        self.block_module = block_module
+        self.start_recursions = start_recursions
+        self.max_recursions = max_recursions
+        self.increase_steps = increase_steps
+        self.increase_every_n_steps = increase_every_n_steps
+
+        print(f"🔢 Setting initial recursions to {self.start_recursions}")
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        """Set initial number of recursions at training start."""
+        self.block_module.set_num_recursions(self.start_recursions)
+        print(f"🚀 Training started with {self.start_recursions} recursions")
+
+    def on_step_end(self, args, state, control, **kwargs):
+        """Increase recursions at specified intervals."""
+        if state.global_step > 0:
+            current_recursions = self.block_module.num_recursions
+            if self.increase_every_n_steps is not None:
+                if (state.global_step % self.increase_every_n_steps == 0 and
+                    current_recursions < self.max_recursions):
+                    new_recursions = min(current_recursions + 1, self.max_recursions)
+                    self.block_module.set_num_recursions(new_recursions)
+                    print(f"🔄 Increased recursions to {new_recursions} at step {state.global_step}")
+            elif self.increase_steps is not None:
+                if (state.global_step in self.increase_steps and
+                    current_recursions < self.max_recursions):
+                    new_recursions = min(current_recursions + 1, self.max_recursions)
+                    self.block_module.set_num_recursions(new_recursions)
+                    print(f"🔄 Increased recursions to {new_recursions} at step {state.global_step}")
+            else:
+                raise ValueError("Either increase_every_n_steps or increase_steps list must be provided.")
