@@ -63,6 +63,13 @@ def load_config(config_path, overwrite_config=True):
     now = datetime.now()
     dir_name = now.strftime("%Y_%m_%d-%H_%M_%S")
 
+    if "recursion_settings" in args:
+        num_recursions = args["recursion_settings"]["num_recursions"]
+        if isinstance(num_recursions, int):
+            num_recursions = [num_recursions]
+        recursion_indices = args["recursion_settings"]["recursion_indices"]
+    block_name = f"block__{'__'.join([f'{start}_{end}' for (start, end) in recursion_indices])}__{'-'.join([str(n) for n in num_recursions])}"
+
     # Handle wandb project name if present
     # project_name = args.get("wandb", {}).get("name", "")
 
@@ -71,7 +78,7 @@ def load_config(config_path, overwrite_config=True):
         base_dir = args.get("output_dir_orig", sft_args['output_dir'])
         args['output_dir_orig'] = base_dir  # ensure stored once
 
-        output_dir = os.path.join(f"{base_dir}", dir_name)
+        output_dir = os.path.join(f"{base_dir}", block_name, dir_name)
         sft_args['output_dir'] = output_dir
     
     # Cast learning rate to float for safety
@@ -144,6 +151,8 @@ def load_config(config_path, overwrite_config=True):
                 k = "resetOpt"
             elif k == "recurrent_blocks_have_residual":
                 k = "residual"
+            elif k == "recursion_indices":
+                k = "indices"
             elif k not in ["neft"]:
                 raise ValueError(f"{k} is not valid!")
 
@@ -290,25 +299,31 @@ class WandbOffsetCallback(TrainerCallback):
             wandb.log(logs, step=state.global_step + self.step_offset)
 
 class DiagnosticCallback(TrainerCallback):
-    def __init__(self, block_module, output_dir, log_frequency=1, save_to_file=True):
+    def __init__(self, model, block_modules, output_dir, log_frequency=1, save_to_file=True):
         super().__init__()
+        self.model = model
         self.log_frequency = log_frequency
-        self.block_module = block_module
+        self.block_modules = block_modules
         self.step_counter = 0
         self.save_to_file = save_to_file
         self.output_dir = output_dir
         file_name = f'{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.csv'
-        self.cosine_file_name = os.path.join(output_dir, f"cosine_{file_name}")
+        self.recur_cosine_file_name = os.path.join(output_dir, f"recur_cosine_{file_name}")
+        self.recur_grad_file_name = os.path.join(output_dir, f"recur_grad_{file_name}")
         self.grad_file_name = os.path.join(output_dir, f"grad_{file_name}")
 
         if not os.path.exists(self.output_dir):
             os.mkdir(self.output_dir)
 
-        with open(self.cosine_file_name, 'w') as f:
-            f.write(f"global_step,iteration,mean,min,max,std\n")
+        with open(self.recur_cosine_file_name, 'w') as f:
+            f.write(f"recur_block_idx,global_step,iteration,mean,min,max,std\n")
+        
+        with open(self.recur_grad_file_name, 'w') as f:
+            f.write(f"recur_block_idx,global_step,step,layer,layer_name,is_recurrent,iteration,norm,mean,max,std\n")
+
         
         with open(self.grad_file_name, 'w') as f:
-            f.write(f"global_step,step,layer,layer_name,is_recurrent,iteration,norm,mean,max,std\n")
+            f.write(f"global_step,step,layer,layer_name,norm,mean,max,std\n")
 
 
     def on_log(self, args, state, control, logs=None, **kwargs):
@@ -317,51 +332,65 @@ class DiagnosticCallback(TrainerCallback):
         # Determine if we should log this step
         should_log = False
         should_log = (self.step_counter % self.log_frequency == 0)
-        
-        if should_log and self.block_module is not None:
-            # print(f"\n{'='*70}")
-            # print(f"Diagnostics at Step {state.global_step}")
-            # print(f"{'='*70}")
-            # self.block_module.print_diagnostics()
-            
+
+        if should_log and self.block_modules is not None:
+
             # Save to file if requested
             if self.save_to_file:
                 self._save_diagnostics_to_file(state.global_step)
 
     def _save_diagnostics_to_file(self, global_step):
         """Save diagnostics to CSV file."""
-        diagnostics = self.block_module.get_diagnostics()
+        for i in range(len(self.block_modules)):
+            block = self.block_modules[i]
+            diagnostics = block.get_diagnostics()
 
-        with open(self.cosine_file_name, 'a') as f:
-            # Write cosine similarities
-            for sim in diagnostics.get('cosine_similarities', []):
-                f.write(f"{global_step},{sim['iteration']},{sim['mean']:.6f},")
-                f.write(f"{sim['min']:.6f},{sim['max']:.6f},{sim['std']:.6f}\n")
-            
-            self.block_module.cosine_similarities = []
-                
-        
-        with open(self.grad_file_name, 'a') as f:
-            grad_info = diagnostics.get('gradient_history', [{}])
-            if grad_info == []:
-                grad_info = [{}]
-            for grad in grad_info:
-                f.write(f"{global_step:7d},")
-                f.write(f"{grad.get('step', 0):7d},")
-                f.write(f"{grad.get('layer', 0):1d},")
-                f.write(f"{grad.get('layer_name', )},")
-                f.write(f"{grad.get('is_recurrent', False)},")
-                f.write(f"{grad.get('iteration', 0):1d},")
-                f.write(f"{grad.get('grad_norm', 0):.6f},")
-                f.write(f"{grad.get('grad_mean', 0):.6f},")
-                f.write(f"{grad.get('grad_max', 0):.6f},")
-                f.write(f"{grad.get('grad_std', 0):.6f}\n")
-            
-            self.block_module.gradient_history = []
+            with open(self.recur_cosine_file_name, 'a') as f:
+                # Write cosine similarities
+                for sim in diagnostics.get('cosine_similarities', []):
+                    f.write(f"{i},")
+                    f.write(f"{global_step},{sim['iteration']},{sim['mean']:.6f},")
+                    f.write(f"{sim['min']:.6f},{sim['max']:.6f},{sim['std']:.6f}\n")
+
+            block.cosine_similarities = []
+
+            with open(self.recur_grad_file_name, 'a') as f:
+                grad_info = diagnostics.get('gradient_history', [{}])
+                if grad_info == []:
+                    grad_info = [{}]
+                for grad in grad_info:
+                    f.write(f"{i},{global_step:7d},")
+                    f.write(f"{grad.get('step', 0):7d},")
+                    f.write(f"{grad.get('layer', 0):1d},")
+                    f.write(f"{grad.get('layer_name', )},")
+                    f.write(f"{grad.get('is_recurrent', False)},")
+                    f.write(f"{grad.get('iteration', 0):1d},")
+                    f.write(f"{grad.get('grad_norm', 0):.6f},")
+                    f.write(f"{grad.get('grad_mean', 0):.6f},")
+                    f.write(f"{grad.get('grad_max', 0):.6f},")
+                    f.write(f"{grad.get('grad_std', 0):.6f}\n")
+
+            block.gradient_history = []
+
+            with open(self.grad_file_name, 'a') as f:
+                grad_info = self.model.gradient_history
+                if grad_info == []:
+                    grad_info = [{}]
+                for grad in grad_info:
+                    f.write(f"{i},{global_step:7d},")
+                    f.write(f"{grad.get('step', 0):7d},")
+                    f.write(f"{grad.get('layer', 0):1d},")
+                    f.write(f"{grad.get('layer_name', )},")
+                    f.write(f"{grad.get('grad_norm', 0):.6f},")
+                    f.write(f"{grad.get('grad_mean', 0):.6f},")
+                    f.write(f"{grad.get('grad_max', 0):.6f},")
+                    f.write(f"{grad.get('grad_std', 0):.6f}\n")
 
         print("The results saved to:")
-        print(self.cosine_file_name)
+        print(self.recur_cosine_file_name)
+        print(self.recur_grad_file_name)
         print(self.grad_file_name)
+
 
 
 
@@ -698,8 +727,8 @@ class EvalCallback(TrainerCallback):
 class GraduallyIncreaseRecursionsCallback(TrainerCallback):
     """Callback to gradually increase the number of recursions during training."""
 
-    def __init__(self, block_module, start_recursions: int, max_recursions: int, increase_steps: list = None, increase_every_n_steps: int = None, reset_optimizer: bool = False):
-        self.block_module = block_module
+    def __init__(self, block_modules, start_recursions: int, max_recursions: int, increase_steps: list = None, increase_every_n_steps: int = None, reset_optimizer: bool = False):
+        self.block_modules = block_modules
         self.start_recursions = start_recursions
         self.max_recursions = max_recursions
         self.increase_steps = increase_steps
@@ -711,38 +740,40 @@ class GraduallyIncreaseRecursionsCallback(TrainerCallback):
 
     def on_train_begin(self, args, state, control, **kwargs):
         """Set initial number of recursions at training start."""
-        self.block_module.set_num_recursions(self.start_recursions)
+        for block_module in self.block_modules:
+            block_module.set_num_recursions(self.start_recursions)
         print(f"🚀 Training started with {self.start_recursions} recursions")
 
     def on_step_end(self, args, state, control, **kwargs):
         """Increase recursions at specified intervals."""
         trainer = kwargs.get("trainer", None)  # access trainer (for optimizer)
         if state.global_step > 0:
-            current_recursions = self.block_module.num_recursions
+            for i, block_module in enumerate(self.block_modules):
+                current_recursions = block_module.num_recursions
 
-            def increase_recursions():
-                new_recursions = min(current_recursions + 1, self.max_recursions)
-                self.block_module.set_num_recursions(new_recursions)
-                print(f"🔄 Increased recursions to {new_recursions} at step {state.global_step}")
+                def increase_recursions():
+                    new_recursions = min(current_recursions + 1, self.max_recursions)
+                    block_module.set_num_recursions(new_recursions)
+                    print(f"🔄 Increased recursions to {new_recursions} at step {state.global_step} for block w/ (relative) index: {i}")
 
-                if self.reset_optimizer and trainer is not None:
-                    print("🧹 Resetting optimizer state...")
-                    self._reset_optimizer(trainer.optimizer)
-                    # if trainer.lr_scheduler is not None:
-                    #     trainer.lr_scheduler.last_epoch = -1
+                    if self.reset_optimizer and trainer is not None:
+                        print("🧹 Resetting optimizer state...")
+                        self._reset_optimizer(trainer.optimizer)
+                        # if trainer.lr_scheduler is not None:
+                        #     trainer.lr_scheduler.last_epoch = -1
 
-            if self.increase_every_n_steps is not None:
-                if (state.global_step % self.increase_every_n_steps == 0
-                        and current_recursions < self.max_recursions):
-                    increase_recursions()
-            elif self.increase_steps is not None:
-                if (state.global_step in self.increase_steps
-                        and current_recursions < self.max_recursions):
-                    increase_recursions()
-            else:
-                raise ValueError(
-                    "Either increase_every_n_steps or increase_steps list must be provided."
-                )
+                if self.increase_every_n_steps is not None:
+                    if (state.global_step % self.increase_every_n_steps == 0
+                            and current_recursions < self.max_recursions):
+                        increase_recursions()
+                elif self.increase_steps is not None:
+                    if (state.global_step in self.increase_steps
+                            and current_recursions < self.max_recursions):
+                        increase_recursions()
+                else:
+                    raise ValueError(
+                        "Either increase_every_n_steps or increase_steps list must be provided."
+                    )
 
     @staticmethod
     def _reset_optimizer(optimizer):
@@ -752,7 +783,7 @@ class GraduallyIncreaseRecursionsCallback(TrainerCallback):
         optimizer.state = {}  # clears momentum, exp averages, etc.
 
 
-def register_global_gradient_tracking(model, tracker):
+def register_global_gradient_tracking(model):
     """
     Register hooks on all parameters in the model to track their gradients.
     
@@ -771,16 +802,16 @@ def register_global_gradient_tracking(model, tracker):
                     layer_idx = int(param_name.split(".")[2] )
                 else:
                     layer_idx = -100
-                tracker.gradient_history.append({
+                model.gradient_history.append({
                     'layer_name': param_name,
                     'layer': layer_idx,
-                    'step': tracker.step_count,
+                    'step': model.step_count,
                     'grad_norm': grad.norm().item(),
                     'grad_mean': grad.mean().item(),
                     'grad_std': grad.std().item(),
                     'grad_max': grad.abs().max().item(),
                 })
-                tracker.step_count += 1
+                model.step_count += 1
                 return grad
             return hook
 

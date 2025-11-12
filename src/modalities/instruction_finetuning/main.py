@@ -9,7 +9,7 @@ os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 from utils import load_config
 
 from transformers import LlamaForCausalLM, AutoTokenizer, GenerationConfig, LlamaConfig
-from recursive_llama2.recursive_llama import RecursiveLlamaConfig, RecursiveLlamaForCausalLM
+from recursive_llama2.recursive_llama import RecursiveLlamaConfig, RecursiveLlamaForCausalLM, BlockRecursiveModule
 
 
 config_path = sys.argv[1]
@@ -179,18 +179,14 @@ model = AutoModelForCausalLM.from_pretrained(
 
 if "llama" in model_name and "recursion_settings" in config:
     recursion_config = config["recursion_settings"]
-    RECURSION_START = recursion_config["start_layer"]
-    RECURSION_END = recursion_config["end_layer"]
-    NUM_RECURSIONS = recursion_config["num_recursions"]
 
     del model
     base_model= LlamaForCausalLM.from_pretrained(config["model_name"])
 
     recursive_llama_config = RecursiveLlamaConfig(
         model_name=config["model_name"],
-        recursion_start_layer=RECURSION_START,
-        recursion_end_layer=RECURSION_END,
-        num_recursions=NUM_RECURSIONS,
+        recursion_indices=recursion_config["recursion_indices"],
+        num_recursions=recursion_config["num_recursions"],
         track_diagnostics=recursion_config["track_diagnostics"],
         neft=recursion_config.get("neft", False),
         neft_alpha=recursion_config.get("neft_alpha", None),
@@ -252,23 +248,23 @@ if "eval_device" in config:
 
 if "recursion_settings" in config:
     if config["recursion_settings"]["track_diagnostics"]:
-        start_layer = config["recursion_settings"]["start_layer"]
         diagnostic_callback = DiagnosticCallback(
-            block_module=model.model.layers[start_layer],
+            model,
+            block_modules=[layer for layer in model.model.layers if isinstance(layer, BlockRecursiveModule)],
             output_dir=os.path.join(config["sft"]["output_dir"], "diagnostic"),
             save_to_file=True
         )
         callbacks.append(diagnostic_callback)
 
-        register_global_gradient_tracking(model, model.model.layers[start_layer])
+        register_global_gradient_tracking(model)
 
 
 
     if config["recursion_settings"].get("gradually_increase_recursions", False):
         gradually_increase_callback = GraduallyIncreaseRecursionsCallback(
-            block_module=model.model.layers[RECURSION_START],
+            block_modules=[layer for layer in model.model.layers if isinstance(layer, BlockRecursiveModule)],
             start_recursions=1,
-            max_recursions=NUM_RECURSIONS,
+            max_recursions=config["recursion_settings"]["num_recursions"],
             increase_steps=config["recursion_settings"].get("increase_steps", None),
             increase_every_n_steps=config["recursion_settings"].get("increase_every_n_steps", None),
             reset_optimizer=config["recursion_settings"].get("reset_optimizer", False)
