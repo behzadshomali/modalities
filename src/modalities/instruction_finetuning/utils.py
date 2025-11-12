@@ -140,6 +140,10 @@ def load_config(config_path, overwrite_config=True):
                 k = "gradual"
             elif k == "increase_steps":
                 k = "incs"
+            elif k == "reset_optimizer":
+                k = "resetOpt"
+            elif k == "recurrent_blocks_have_residual":
+                k = "residual"
             elif k not in ["neft"]:
                 raise ValueError(f"{k} is not valid!")
 
@@ -668,12 +672,13 @@ class EvalCallback(TrainerCallback):
         config_path = os.path.join(checkpoint_path, "config.json")
         with open(config_path, 'r') as f:
             config = json.load(f)
-        
-        config['auto_map'] = {
-            'AutoConfig': 'modeling_recursive_llama.RecursiveLlamaConfig',
-            'AutoModelForCausalLM': 'modeling_recursive_llama.RecursiveLlamaForCausalLM',
-        }
-        
+
+        if config.get('model_type', '') == 'recursive-llama':
+            config['auto_map'] = {
+                'AutoConfig': 'modeling_recursive_llama.RecursiveLlamaConfig',
+                'AutoModelForCausalLM': 'modeling_recursive_llama.RecursiveLlamaForCausalLM',
+            }
+
         with open(config_path, 'w') as f:
             json.dump(config, f, indent=2)
 
@@ -693,14 +698,16 @@ class EvalCallback(TrainerCallback):
 class GraduallyIncreaseRecursionsCallback(TrainerCallback):
     """Callback to gradually increase the number of recursions during training."""
 
-    def __init__(self, block_module, start_recursions: int, max_recursions: int, increase_steps: list = None, increase_every_n_steps: int = None):
+    def __init__(self, block_module, start_recursions: int, max_recursions: int, increase_steps: list = None, increase_every_n_steps: int = None, reset_optimizer: bool = False):
         self.block_module = block_module
         self.start_recursions = start_recursions
         self.max_recursions = max_recursions
         self.increase_steps = increase_steps
         self.increase_every_n_steps = increase_every_n_steps
+        self.reset_optimizer = reset_optimizer
 
         print(f"🔢 Setting initial recursions to {self.start_recursions}")
+        print(f"Reset optimizer on recursion increase: {self.reset_optimizer}")
 
     def on_train_begin(self, args, state, control, **kwargs):
         """Set initial number of recursions at training start."""
@@ -709,19 +716,72 @@ class GraduallyIncreaseRecursionsCallback(TrainerCallback):
 
     def on_step_end(self, args, state, control, **kwargs):
         """Increase recursions at specified intervals."""
+        trainer = kwargs.get("trainer", None)  # access trainer (for optimizer)
         if state.global_step > 0:
             current_recursions = self.block_module.num_recursions
+
+            def increase_recursions():
+                new_recursions = min(current_recursions + 1, self.max_recursions)
+                self.block_module.set_num_recursions(new_recursions)
+                print(f"🔄 Increased recursions to {new_recursions} at step {state.global_step}")
+
+                if self.reset_optimizer and trainer is not None:
+                    print("🧹 Resetting optimizer state...")
+                    self._reset_optimizer(trainer.optimizer)
+                    # if trainer.lr_scheduler is not None:
+                    #     trainer.lr_scheduler.last_epoch = -1
+
             if self.increase_every_n_steps is not None:
-                if (state.global_step % self.increase_every_n_steps == 0 and
-                    current_recursions < self.max_recursions):
-                    new_recursions = min(current_recursions + 1, self.max_recursions)
-                    self.block_module.set_num_recursions(new_recursions)
-                    print(f"🔄 Increased recursions to {new_recursions} at step {state.global_step}")
+                if (state.global_step % self.increase_every_n_steps == 0
+                        and current_recursions < self.max_recursions):
+                    increase_recursions()
             elif self.increase_steps is not None:
-                if (state.global_step in self.increase_steps and
-                    current_recursions < self.max_recursions):
-                    new_recursions = min(current_recursions + 1, self.max_recursions)
-                    self.block_module.set_num_recursions(new_recursions)
-                    print(f"🔄 Increased recursions to {new_recursions} at step {state.global_step}")
+                if (state.global_step in self.increase_steps
+                        and current_recursions < self.max_recursions):
+                    increase_recursions()
             else:
-                raise ValueError("Either increase_every_n_steps or increase_steps list must be provided.")
+                raise ValueError(
+                    "Either increase_every_n_steps or increase_steps list must be provided."
+                )
+
+    @staticmethod
+    def _reset_optimizer(optimizer):
+        """Reset optimizer states (e.g., Adam’s moment estimates)."""
+        for param_group in optimizer.param_groups:
+            param_group["step"] = 0
+        optimizer.state = {}  # clears momentum, exp averages, etc.
+
+
+def register_global_gradient_tracking(model, tracker):
+    """
+    Register hooks on all parameters in the model to track their gradients.
+    
+    Args:
+        model: The full nn.Module (e.g., the Llama model)
+        tracker: An object (e.g., block_module) with a `.gradient_history` list
+                 and `.step_count` counter to store gradient statistics.
+    """
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+
+        def make_param_grad_hook(param_name):
+            def hook(grad):
+                if "model.layers." in param_name:
+                    layer_idx = int(param_name.split(".")[2] )
+                else:
+                    layer_idx = -100
+                tracker.gradient_history.append({
+                    'layer_name': param_name,
+                    'layer': layer_idx,
+                    'step': tracker.step_count,
+                    'grad_norm': grad.norm().item(),
+                    'grad_mean': grad.mean().item(),
+                    'grad_std': grad.std().item(),
+                    'grad_max': grad.abs().max().item(),
+                })
+                tracker.step_count += 1
+                return grad
+            return hook
+
+        param.register_hook(make_param_grad_hook(name))
