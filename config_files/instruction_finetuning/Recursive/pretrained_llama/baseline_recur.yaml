@@ -34,8 +34,8 @@ sft:
   gradient_accumulation_steps: 1
   gradient_checkpointing: true
   greater_is_better: true
-  # learning_rate: 3.0e-05
-  learning_rate: 3.0e-5
+  learning_rate: 3.0e-05
+  # learning_rate: 2.0e-4
   load_best_model_at_end: false
   logging_steps: 20
   lr_scheduler_type: cosine
@@ -43,15 +43,15 @@ sft:
   max_length: 1024
   metric_for_best_model: eval_sacrebleu
   num_train_epochs: 1
-  optim: sgd
-  output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/pretrained_llama/block__8_11__3/
+  optim: paged_adamw_32bit
+  output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/pretrained_llama/baseline/
   packing: false
   per_device_eval_batch_size: 24
   per_device_train_batch_size: 8
   push_to_hub: false
   report_to: wandb
   save_only_model: true
-  save_steps: 500
+  save_steps: 1000
   save_strategy: steps
   tf32: false
   use_liger_kernel: false
@@ -62,17 +62,12 @@ train_size: 100000
 val_size: 8000
 wandb:
   project: NEW_RUNS_Llama_Recursive_IT_OpenMathInstruct-2
-  name: block__8_11__3
+  name: baseline
 
 recursion_settings:
   type: block
-  start_layer: 8
-  end_layer: 11
-  num_recursions: 3
+  start_layer: 0
+  end_layer: 0
+  num_recursions: 1
   sample_random_recursion: false
-  track_diagnostics: true
-  neft: false
-  # neft_alpha: 5
-  gradually_increase_recursions: true
-  reset_optimizer: true
-  increase_steps: [3000, 6000, 9000]
+  track_diagnostics: false

@@ -43,15 +43,15 @@ sft:
   max_length: 1024
   metric_for_best_model: eval_sacrebleu
   num_train_epochs: 1
-  optim: sgd
-  output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/pretrained_llama/block__8_11__3/
+  optim: paged_adamw_32bit
+  output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/pretrained_llama/block__8_11__5/
   packing: false
   per_device_eval_batch_size: 24
   per_device_train_batch_size: 8
   push_to_hub: false
   report_to: wandb
   save_only_model: true
-  save_steps: 500
+  save_steps: 1000
   save_strategy: steps
   tf32: false
   use_liger_kernel: false
@@ -62,17 +62,17 @@ train_size: 100000
 val_size: 8000
 wandb:
   project: NEW_RUNS_Llama_Recursive_IT_OpenMathInstruct-2
-  name: block__8_11__3
+  name: block__8_11__5
 
 recursion_settings:
   type: block
   start_layer: 8
   end_layer: 11
-  num_recursions: 3
+  num_recursions: 5
   sample_random_recursion: false
   track_diagnostics: true
-  neft: false
-  # neft_alpha: 5
+  neft: true
+  neft_alpha: 5
   gradually_increase_recursions: true
   reset_optimizer: true
-  increase_steps: [3000, 6000, 9000]
+  increase_steps: [4000, 6000, 8000, 9000, 10000]
