@@ -32,7 +32,8 @@ from utils import (
     set_cache_dirs, 
     EvalCallback, 
     DiagnosticCallback,
-    GraduallyIncreaseRecursionsCallback
+    GraduallyIncreaseRecursionsCallback,
+    register_global_gradient_tracking
 )
 
 set_cache_dirs(new_cache_dir=config["new_cache_dir"])
@@ -176,7 +177,7 @@ model = AutoModelForCausalLM.from_pretrained(
     # max_memory={0: "81GiB", 1: "0GiB"}
 )
 
-if "llama" in model_name:
+if "llama" in model_name and "recursion_settings" in config:
     recursion_config = config["recursion_settings"]
     RECURSION_START = recursion_config["start_layer"]
     RECURSION_END = recursion_config["end_layer"]
@@ -192,37 +193,14 @@ if "llama" in model_name:
         num_recursions=NUM_RECURSIONS,
         track_diagnostics=recursion_config["track_diagnostics"],
         neft=recursion_config.get("neft", False),
-        neft_alpha=recursion_config.get("neft_alpha", None)
+        neft_alpha=recursion_config.get("neft_alpha", None),
+        recurrent_blocks_have_residual=recursion_config.get("recurrent_blocks_have_residual", True),
+        increase_steps=recursion_config.get("increase_steps", None),
+        gradually_increase_recursions=recursion_config.get("gradually_increase_recursions", False),
+        sample_random_recursion=recursion_config.get("sample_random_recursion", False),
     )
 
-    model = RecursiveLlamaForCausalLM(recursive_llama_config) 
-
-    print("Copying weights...")
-
-    # Embeddings and final normalization
-    model.model.embed_tokens.load_state_dict(base_model.model.embed_tokens.state_dict())
-    model.model.norm.load_state_dict(base_model.model.norm.state_dict())
-    model.lm_head.load_state_dict(base_model.lm_head.state_dict())
-
-    # Layers BEFORE the block
-    model.model.layers[:RECURSION_START].load_state_dict(
-        base_model.model.layers[:RECURSION_START].state_dict()
-    )
-
-    # Layers INTO the block
-    # model.model.layers[RECURSION_START] is our BlockRecursiveModule
-    model.model.layers[RECURSION_START].layer_block.load_state_dict(
-        base_model.model.layers[RECURSION_START : RECURSION_END + 1].state_dict()
-    )
-
-    # Layers AFTER the block
-    # The new index is RECURSION_START + 1
-    # The original index is RECURSION_END + 1
-    model.model.layers[RECURSION_START + 1 :].load_state_dict(
-        base_model.model.layers[RECURSION_END + 1 :].state_dict()
-    )
-
-    print("Weight copy complete.")
+    model = RecursiveLlamaForCausalLM(recursive_llama_config, use_bf16=config.get("use_bf16", True)) 
 
 
 
@@ -267,28 +245,35 @@ print_trainable_params(model)
 
 
 callbacks = []
-if config["recursion_settings"]["track_diagnostics"]:
-    start_layer = config["recursion_settings"]["start_layer"]
-    diagnostic_callback = DiagnosticCallback(
-        block_module=model.model.layers[start_layer],
-        output_dir=os.path.join(config["sft"]["output_dir"], "diagnostic"),
-        save_to_file=True
-    )
-    callbacks.append(diagnostic_callback)
 
 if "eval_device" in config:
     eval_callback = EvalCallback(eval_gpu=config["eval_device"], source_model_path=config['model_name'], hf_home=config['new_cache_dir'])
     callbacks.append(eval_callback)
 
-if config["recursion_settings"].get("gradually_increase_recursions", False):
-    gradually_increase_callback = GraduallyIncreaseRecursionsCallback(
-        block_module=model.model.layers[RECURSION_START],
-        start_recursions=1,
-        max_recursions=NUM_RECURSIONS,
-        increase_steps=config["recursion_settings"].get("increase_steps", None),
-        increase_every_n_steps=config["recursion_settings"].get("increase_every_n_steps", None),
-    )
-    callbacks.append(gradually_increase_callback)
+if "recursion_settings" in config:
+    if config["recursion_settings"]["track_diagnostics"]:
+        start_layer = config["recursion_settings"]["start_layer"]
+        diagnostic_callback = DiagnosticCallback(
+            block_module=model.model.layers[start_layer],
+            output_dir=os.path.join(config["sft"]["output_dir"], "diagnostic"),
+            save_to_file=True
+        )
+        callbacks.append(diagnostic_callback)
+
+        register_global_gradient_tracking(model, model.model.layers[start_layer])
+
+
+
+    if config["recursion_settings"].get("gradually_increase_recursions", False):
+        gradually_increase_callback = GraduallyIncreaseRecursionsCallback(
+            block_module=model.model.layers[RECURSION_START],
+            start_recursions=1,
+            max_recursions=NUM_RECURSIONS,
+            increase_steps=config["recursion_settings"].get("increase_steps", None),
+            increase_every_n_steps=config["recursion_settings"].get("increase_every_n_steps", None),
+            reset_optimizer=config["recursion_settings"].get("reset_optimizer", False)
+        )
+        callbacks.append(gradually_increase_callback)
 
 
 trainer = SFTTrainer(
