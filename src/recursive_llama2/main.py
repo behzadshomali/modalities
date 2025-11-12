@@ -1,3 +1,6 @@
+import os 
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+
 import torch
 from transformers import LlamaForCausalLM, AutoTokenizer, AutoModelForCausalLM
 from recursive_llama import RecursiveLlamaConfig, RecursiveLlamaForCausalLM # Import our new classes
@@ -5,9 +8,9 @@ from recursive_llama import RecursiveLlamaConfig, RecursiveLlamaForCausalLM # Im
 # --- Define Your Conversion Parameters ---
 BASE_MODEL_ID = "meta-llama/Llama-3.2-1B"
 NEW_MODEL_PATH = "./my-recursive-llama-7b" # Where to save the new model
-RECURSION_START = 1
-RECURSION_END = 15
-NUM_RECURSIONS = 10
+RECURSION_START = 0
+RECURSION_END = 0
+NUM_RECURSIONS = 1
 
 print("Loading base model...")
 base_model = LlamaForCausalLM.from_pretrained(BASE_MODEL_ID)
@@ -23,6 +26,7 @@ config = RecursiveLlamaConfig(
     num_recursions=NUM_RECURSIONS,
     sample_random_recursion=False, # Set your defaults
     track_diagnostics=False,
+    
 )
 
 # --- 2. Create the new model (with random weights) ---
@@ -63,25 +67,41 @@ model = model.to("cuda")
 base_model = base_model.to("cuda")
 
 
+MAX_NEW_TOKENS = 200
 
+# model.model.layers[RECURSION_START]
 
-# finetuned_model_name = "/raid/s3/opengptx/behzad_shomali/instruction_tuning/pretrained_llama/dummy/2025_11_02-20_23_15/checkpoint-100"
-# model = AutoModelForCausalLM.from_pretrained(finetuned_model_name, output_hidden_states=True, trust_remote_code=True).to("cuda:0")
-# tokenizer = AutoTokenizer.from_pretrained(finetuned_model_name)
+with torch.no_grad():
+    model.model.layers[RECURSION_START].layer_block[0].mlp.down_proj.weight.data *= 5
 
-# model = model.eval()
-# model.model.layers[8].num_recursions = 2
-# prompt = "Yesterday I saw"
-prompt = "The key to life is fsd "
+prompt = "The key to life is to"
 input_ = tokenizer(prompt, return_tensors="pt").to("cuda")
-
-
-output_w_cache = model(**input_, use_cache=True, do_sample=False)["logits"]
-
+output_w_cache = model.generate(**input_, use_cache=True, do_sample=False, max_new_tokens=MAX_NEW_TOKENS)
 print("WO CACHE ....")
-
-output_wo_cache = model(**input_, use_cache=False, do_sample=False)["logits"]
-
+output_wo_cache = model.generate(**input_, use_cache=False, do_sample=False, max_new_tokens=MAX_NEW_TOKENS)
 print("IS EQUAL?", torch.allclose(output_w_cache, output_wo_cache))
+
+
+
+base_model = LlamaForCausalLM.from_pretrained(BASE_MODEL_ID).to("cuda")
+
+with torch.no_grad():
+    base_model.model.layers[RECURSION_START].mlp.down_proj.weight.data *= 5
+
+
+output_base_w_cache = base_model.generate(**input_, do_sample=False, use_cache=True, max_new_tokens=MAX_NEW_TOKENS)
+print("BASE MODEL ...")
+output_base_wo_cache = base_model.generate(**input_, do_sample=False, use_cache=False, max_new_tokens=MAX_NEW_TOKENS)
+print("IS EQUAL TO BASE?", torch.allclose(output_base_w_cache, output_base_wo_cache))
+print("IS EQUAL TO BASE W CACHE?", torch.allclose(output_w_cache, output_base_w_cache))
+print("IS EQUAL TO BASE WO CACHE?", torch.allclose(output_wo_cache, output_base_wo_cache))
+
+
+
+print(tokenizer.decode(output_w_cache[0]))
+print(tokenizer.decode(output_wo_cache[0]))
+print(tokenizer.decode(output_base_w_cache[0]))
+
+
 if True:
     pass
