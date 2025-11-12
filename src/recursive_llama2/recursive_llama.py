@@ -99,7 +99,7 @@ class BlockRecursiveModule(nn.Module):
         original_layer_idx = layer.self_attn.layer_idx
         if not isinstance(past_key_values.layers[original_layer_idx], CustomDynamicLayer):
             # Replace with CustomDynamicLayer
-            original_cache = past_key_values.layers[original_layer_idx]
+            original_cache = past_key_values[original_layer_idx]
             if original_cache != (None, None):
                 raise ValueError(f"Expected None cache at layer {original_layer_idx} before overwriting, got non-None.")
             new_cache = CustomDynamicLayer()
@@ -229,8 +229,7 @@ class RecursiveLlamaConfig(LlamaConfig):
     def __init__(
         self,
         model_name=None,                 # Used ONLY for initial creation
-        recursion_start_layer=None,
-        recursion_end_layer=None,
+        recursion_indices=None,
         num_recursions=None,
         original_num_hidden_layers=None, # Default to None
         sample_random_recursion=False,
@@ -275,9 +274,11 @@ class RecursiveLlamaConfig(LlamaConfig):
         # This runs in both cases (initial creation and loading), 
         # ensuring the object has the correct values (either 
         # from user args or from the loaded config.json).
-        self.recursion_start_layer = recursion_start_layer
-        self.recursion_end_layer = recursion_end_layer
-        self.num_recursions = num_recursions
+        self.recursion_indices = recursion_indices
+        if isinstance(num_recursions, int):
+            self.num_recursions = [num_recursions] * len(recursion_indices)
+        else:
+            self.num_recursions = num_recursions
         self.sample_random_recursion = sample_random_recursion
         self.track_diagnostics = track_diagnostics
         self.neft = neft
@@ -305,40 +306,45 @@ class RecursiveLlamaModel(LlamaModel):
         self.rotary_emb = LlamaRotaryEmbedding(config=config) 
 
         self.layers = nn.ModuleList()
-        start = config.recursion_start_layer
-        end = config.recursion_end_layer
-
-        # 1. Add layers *before* the block
-        for idx in range(start):
-            self.layers.append(LlamaDecoderLayer(config, layer_idx=idx))
-
-        # 2. Create and add the *recursive block*
-        layer_block = nn.ModuleList()
-        for idx in range(start, end + 1):
-            if config.recurrent_blocks_have_residual:
-                layer_block.append(LlamaDecoderLayer(config, layer_idx=idx))
-            else:
-                print("Adding layer without residual:", idx)
-                layer_block.append(LlamaDecoderLayerWOResidual(config, layer_idx=idx))
-
-        self.layers.append(BlockRecursiveModule(
-            config,
-            layer_block=layer_block,
-            num_recursions=config.num_recursions,
-            sample_random_recursion=config.sample_random_recursion,
-            track_diagnostics=config.track_diagnostics,
-            neft=config.neft,
-            neft_alpha=config.neft_alpha
-        ))
         
-        # 3. Add layers *after* the block
-        next_non_recurrent_layer_idx = start + 1
-        for idx in range(end + 1, config.original_num_hidden_layers):
+        current_idx = 0
+        for (start, end), num_recursions in zip(config.recursion_indices, config.num_recursions):
+            # 1. Add layers before this block (non-recursive)
+            for idx in range(current_idx, start):
+                self.layers.append(LlamaDecoderLayer(config, layer_idx=idx))
+            
+            # 2. Create and add the recursive block
+            layer_block = nn.ModuleList()
+            for idx in range(start, end + 1):
+                if config.recurrent_blocks_have_residual:
+                    layer_block.append(LlamaDecoderLayer(config, layer_idx=idx))
+                else:
+                    print("Adding layer without residual:", idx)
+                    layer_block.append(LlamaDecoderLayerWOResidual(config, layer_idx=idx))
+
+            self.layers.append(BlockRecursiveModule(
+                config,
+                layer_block=layer_block,
+                num_recursions=num_recursions,
+                sample_random_recursion=config.sample_random_recursion,
+                track_diagnostics=config.track_diagnostics,
+                neft=config.neft,
+                neft_alpha=config.neft_alpha
+            ))
+
+            # Update index to continue after the block
+            current_idx = end + 1
+
+        # 3. Add any remaining layers *after* the last block
+        for idx in range(current_idx, config.original_num_hidden_layers):
             self.layers.append(LlamaDecoderLayer(config, layer_idx=idx))
-            next_non_recurrent_layer_idx += 1
 
         print("Number of final layers:", len(self.layers))
-        
+        print("Layer types:")
+        for layer in self.layers:
+            print(" -", type(layer).__name__)
+
+
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_init()
 
@@ -411,6 +417,8 @@ class RecursiveLlamaForCausalLM(LlamaForCausalLM):
 
     def __init__(self, config: RecursiveLlamaConfig, use_bf16=True):
         super(LlamaForCausalLM, self).__init__(config)
+        self.gradient_history = []
+        self.step_count = 0
         
         self.model = RecursiveLlamaModel(config)
         self.vocab_size = config.vocab_size
@@ -418,32 +426,41 @@ class RecursiveLlamaForCausalLM(LlamaForCausalLM):
 
         base_model = LlamaForCausalLM.from_pretrained("meta-llama/Llama-3.2-1B")
         try:
+            # Load embeddings and output heads as usual
             self.model.embed_tokens.load_state_dict(base_model.model.embed_tokens.state_dict())
-        
             self.model.norm.load_state_dict(base_model.model.norm.state_dict())
             self.lm_head.load_state_dict(base_model.lm_head.state_dict())
 
+            block_ranges = config.recursion_indices  # e.g. [(2, 5), (10, 12), (18, 20)]
+            block_ranges = sorted(block_ranges, key=lambda x: x[0])
 
-            RECURSION_START = config.recursion_start_layer
-            RECURSION_END = config.recursion_end_layer
+            # Keep track of where we are in the layer list
+            current_idx = 0
+            new_layer_idx = 0  # index into self.model.layers (which includes blocks)
 
-            # Layers BEFORE the block
-            self.model.layers[:RECURSION_START].load_state_dict(
-                base_model.model.layers[:RECURSION_START].state_dict()
-            )
+            for start, end in block_ranges:
+                # 1. Layers BEFORE this block
+                if start > current_idx:
+                    self.model.layers[new_layer_idx : new_layer_idx + (start - current_idx)].load_state_dict(
+                        base_model.model.layers[current_idx:start].state_dict()
+                    )
+                    new_layer_idx += (start - current_idx)
 
-            # Layers INTO the block
-            # model.model.layers[RECURSION_START] is our BlockRecursiveModule
-            self.model.layers[RECURSION_START].layer_block.load_state_dict(
-                base_model.model.layers[RECURSION_START : RECURSION_END + 1].state_dict()
-            )
+                # 2. Layers INSIDE this recursive block
+                # self.model.layers[new_layer_idx] corresponds to a BlockRecursiveModule
+                block = self.model.layers[new_layer_idx]
+                base_layers_to_copy = base_model.model.layers[start : end + 1]
+                block.layer_block.load_state_dict(base_layers_to_copy.state_dict())
+                
+                new_layer_idx += 1  # advance by one since the whole block counts as a single layer
+                current_idx = end + 1
 
-            # Layers AFTER the block
-            # The new index is RECURSION_START + 1
-            # The original index is RECURSION_END + 1
-            self.model.layers[RECURSION_START + 1 :].load_state_dict(
-                base_model.model.layers[RECURSION_END + 1 :].state_dict()
-            )
+            # 3. Layers AFTER the last block
+            if current_idx < len(base_model.model.layers):
+                self.model.layers[new_layer_idx:].load_state_dict(
+                    base_model.model.layers[current_idx:].state_dict()
+                )
+
         except Exception as e:
             print("Error loading state dict from base model:", e)
             print("Continuing with randomly initialized weights.")
