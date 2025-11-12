@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import random
-from transformers import LlamaConfig, LlamaModel, LlamaForCausalLM, AutoConfig, AutoModelForCausalLM
+from transformers.utils.deprecation import deprecate_kwarg
+from transformers import AutoTokenizer, GradientCheckpointingLayer, LlamaConfig, LlamaModel, LlamaForCausalLM, AutoConfig, AutoModelForCausalLM
 from transformers.models.llama.modeling_llama import (
     LlamaDecoderLayer, 
     LlamaPreTrainedModel, 
@@ -11,11 +12,12 @@ from transformers.models.llama.modeling_llama import (
     LlamaAttention, 
     LlamaMLP 
 )
-from transformers.modeling_outputs import BaseModelOutputWithPast
-from transformers.utils import TransformersKwargs
+from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
+from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple
 from transformers.cache_utils import DynamicCache, Cache, DynamicLayer
 from transformers.masking_utils import create_causal_mask
 from typing import Any, List, Optional, Tuple, Union, Unpack
+from trl import setup_chat_format
 
 
 class CustomDynamicLayer(DynamicLayer):
@@ -32,6 +34,7 @@ class CustomDynamicLayer(DynamicLayer):
         self.dtype, self.device = key_states.dtype, key_states.device
         self.keys = torch.tensor([], dtype=self.dtype, device=self.device)
         self.values = torch.tensor([], dtype=self.dtype, device=self.device)
+    
         self.keys_per_iteration = [torch.tensor([], dtype=self.dtype, device=self.device) for _ in range(10)]  # max 10 recursions
         self.values_per_iteration = [torch.tensor([], dtype=self.dtype, device=self.device) for _ in range(10)]
         self.is_initialized = True
@@ -45,16 +48,7 @@ class CustomDynamicLayer(DynamicLayer):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Update (on-demand) the key and value caches in-place, and return the necessary keys and value states.
-
-        Args:
-            key_states (`torch.Tensor`): The new key states to cache.
-            value_states (`torch.Tensor`): The new value states to cache.
-            cache_kwargs (`dict[str, Any]`, *optional*): Additional arguments for the cache.
-
-        Returns:
-            tuple[`torch.Tensor`, `torch.Tensor`]: The key and value states.
         """
-        # Lazy initialization
         if not self.is_initialized:
             self.lazy_initialization(key_states)
 
@@ -80,8 +74,9 @@ class CustomDynamicLayer(DynamicLayer):
 
 
 class BlockRecursiveModule(nn.Module):
-    def __init__(self, layer_block, num_recursions, sample_random_recursion, track_diagnostics, neft=False, neft_alpha=None):
+    def __init__(self, config, layer_block, num_recursions, sample_random_recursion, track_diagnostics, neft=False, neft_alpha=None):
         super().__init__()
+        self.config = config # to store the modified num_recursions later
         self.layer_block = layer_block
         self.num_recursions = num_recursions
         self.sample_random_recursion = sample_random_recursion
@@ -105,19 +100,12 @@ class BlockRecursiveModule(nn.Module):
         if not isinstance(past_key_values.layers[original_layer_idx], CustomDynamicLayer):
             # Replace with CustomDynamicLayer
             original_cache = past_key_values.layers[original_layer_idx]
-            if past_key_values[original_layer_idx] != (None, None):
+            if original_cache != (None, None):
                 raise ValueError(f"Expected None cache at layer {original_layer_idx} before overwriting, got non-None.")
             new_cache = CustomDynamicLayer()
             past_key_values.layers[original_layer_idx] = new_cache
             print(f"Overwritten cache class for layer {original_layer_idx} to CustomDynamicLayer.")
             self.is_cache_class_overwritten[new_layer_idx] = True
-
-    def _set_should_update_cache(self, layer, past_key_values, flag: bool):
-        original_layer_idx = layer.self_attn.layer_idx
-        if isinstance(past_key_values.layers[original_layer_idx], CustomDynamicLayer):
-            past_key_values.layers[original_layer_idx].should_update_cache = flag
-        else:
-            raise ValueError(f"Cache for layer {original_layer_idx} is not a CustomDynamicLayer.")
 
     def _set_current_iteration(self, layer, past_key_values, iteration_idx: int):
         original_layer_idx = layer.self_attn.layer_idx
@@ -128,6 +116,7 @@ class BlockRecursiveModule(nn.Module):
         
     def set_num_recursions(self, num_recursions: int):
         self.num_recursions = num_recursions
+        self.config.num_recursions = num_recursions
 
     def forward(
         self,
@@ -158,7 +147,6 @@ class BlockRecursiveModule(nn.Module):
             is_final = (iteration == num_recursions - 1)
 
             all_present_key_values = past_key_values if is_final else None
-            # print("Iteration:", iteration, "is_final:", is_final)
             for i, layer in enumerate(self.layer_block):
                 if past_key_values is not None:
                     original_layer_idx = layer.self_attn.layer_idx
@@ -169,7 +157,6 @@ class BlockRecursiveModule(nn.Module):
                             raise ValueError(f"Expected None cache at layer {original_layer_idx} before overwriting, got non-None.")
                 
                 if past_key_values is not None:
-                    self._set_should_update_cache(layer, past_key_values, True)
                     self._set_current_iteration(layer, past_key_values, iteration_idx=iteration)
 
                 hidden_states = layer(
@@ -177,7 +164,6 @@ class BlockRecursiveModule(nn.Module):
                     attention_mask=attention_mask,
                     position_ids=position_ids,
                     past_key_values=past_key_values,
-                    # use_cache=is_final,          # write only in last iteration
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
                     **kwargs
@@ -191,23 +177,10 @@ class BlockRecursiveModule(nn.Module):
                     scaled_noise = noise * alpha / ((L*d)**0.5)
                     hidden_states = hidden_states + scaled_noise
 
-                # if self.track_diagnostics and hidden_states.requires_grad and self.training:
-                #     def make_grad_hook(layer_idx, iteration_idx):
-                #         def grad_hook(grad):
-                #             self.gradient_history.append({
-                #                 'layer_name': layer_name,
-                #                 'is_recurrent': True,
-                #                 'iteration': iteration_idx,
-                #                 'step': self.step_count,
-                #                 'grad_norm': grad.norm().item(),
-                #                 'grad_mean': grad.mean().item(),
-                #                 'grad_std': grad.std().item(),
-                #                 'grad_max': grad.abs().max().item()
-                #             })
-                #             self.step_count += 1
-                #             return grad
-                #         return grad_hook
-                #     hidden_states.register_hook(make_grad_hook(layer_idx, iteration))
+                if self.track_diagnostics and self.training:
+                    layer_name = f"recursive_block_layer_{i}"
+                    grad_hook = self._make_grad_hook(layer_name, iteration, is_recurrent=True)
+                    hidden_states.register_hook(grad_hook)
 
             if self.track_diagnostics and self.training:
                 current_activation = hidden_states.detach().clone()
@@ -222,13 +195,9 @@ class BlockRecursiveModule(nn.Module):
                 prev_hidden_states = current_activation
 
 
-        # return exactly what a normal decoder layer would return
-        if use_cache:
-            return hidden_states, past_key_values
-        else:
-            return hidden_states
+        return hidden_states
 
-    def _make_grad_hook(self, layer_idx, iteration_idx, is_recurrent):
+    def _make_grad_hook(self, layer_name, iteration_idx, is_recurrent):
         def grad_hook(grad):
             # record grad info
             self.gradient_history.append({
@@ -268,6 +237,10 @@ class RecursiveLlamaConfig(LlamaConfig):
         track_diagnostics=False,
         neft=False,
         neft_alpha=None,
+        gradually_increase_recursions=False,
+        reset_optimizer=False,
+        increase_steps=None,
+        recurrent_blocks_have_residual=True,
         **kwargs,
     ):
 
@@ -280,19 +253,9 @@ class RecursiveLlamaConfig(LlamaConfig):
             # Get original layers from the base config
             original_layers = base_config.num_hidden_layers
             
-            # Populate kwargs with properties from the base config
-            # (e.g., vocab_size, hidden_size, etc.)
-            # base_config_dict.pop("num_hidden_layers", None)
             base_config_dict.pop("model_type", None) # We're setting our own
             kwargs.update(base_config_dict)
-
-            # Calculate the new number of hidden layers
-            num_layers_before = recursion_start_layer
-            num_layers_after = original_layers - (recursion_end_layer + 1)
-            new_num_hidden_layers = num_layers_before + 1 + num_layers_after
-            # kwargs["num_hidden_layers"] = new_num_hidden_layers
             
-            # Pass the *calculated* new_num_hidden_layers to the parent
             super().__init__(**kwargs)
             
             # Store the original layer count
@@ -300,8 +263,7 @@ class RecursiveLlamaConfig(LlamaConfig):
 
         # Case 2: Loading from config.json (model_name is None)
         else:
-            # All properties, including the correct (modified) `num_hidden_layers`,
-            # are already in `kwargs`, loaded from config.json.
+            # All properties are already in `kwargs`, loaded from config.json.
             # We just pass them all to the parent.
             super().__init__(**kwargs)
             
@@ -310,8 +272,9 @@ class RecursiveLlamaConfig(LlamaConfig):
             self.original_num_hidden_layers = original_num_hidden_layers
 
         # Finally, set all custom attributes.
-        # This runs in both cases, ensuring the object has the correct
-        # values (either from user args or from the loaded config.json).
+        # This runs in both cases (initial creation and loading), 
+        # ensuring the object has the correct values (either 
+        # from user args or from the loaded config.json).
         self.recursion_start_layer = recursion_start_layer
         self.recursion_end_layer = recursion_end_layer
         self.num_recursions = num_recursions
@@ -319,6 +282,11 @@ class RecursiveLlamaConfig(LlamaConfig):
         self.track_diagnostics = track_diagnostics
         self.neft = neft
         self.neft_alpha = neft_alpha
+        self.recurrent_blocks_have_residual = recurrent_blocks_have_residual
+        self.gradually_increase_recursions = gradually_increase_recursions
+        self.reset_optimizer = reset_optimizer
+        self.increase_steps = increase_steps if increase_steps is not None else []
+
 
 
 
@@ -328,7 +296,7 @@ class RecursiveLlamaModel(LlamaModel):
     def __init__(self, config: RecursiveLlamaConfig):
         super(LlamaModel, self).__init__(config)
 
-        # Manually copy LlamaModel's __init__ logic (including missing parts)
+        # Manually copy LlamaModel's __init__ logic
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
         self.gradient_checkpointing = False
@@ -343,17 +311,18 @@ class RecursiveLlamaModel(LlamaModel):
         # 1. Add layers *before* the block
         for idx in range(start):
             self.layers.append(LlamaDecoderLayer(config, layer_idx=idx))
-        
+
         # 2. Create and add the *recursive block*
         layer_block = nn.ModuleList()
         for idx in range(start, end + 1):
-            # idx = start
-            layer_block.append(LlamaDecoderLayer(config, layer_idx=idx))
-            
+            if config.recurrent_blocks_have_residual:
+                layer_block.append(LlamaDecoderLayer(config, layer_idx=idx))
+            else:
+                print("Adding layer without residual:", idx)
+                layer_block.append(LlamaDecoderLayerWOResidual(config, layer_idx=idx))
 
-
-        
         self.layers.append(BlockRecursiveModule(
+            config,
             layer_block=layer_block,
             num_recursions=config.num_recursions,
             sample_random_recursion=config.sample_random_recursion,
@@ -365,26 +334,8 @@ class RecursiveLlamaModel(LlamaModel):
         # 3. Add layers *after* the block
         next_non_recurrent_layer_idx = start + 1
         for idx in range(end + 1, config.original_num_hidden_layers):
-            # idx = next_non_recurrent_layer_idx
-            # print(idx)
             self.layers.append(LlamaDecoderLayer(config, layer_idx=idx))
             next_non_recurrent_layer_idx += 1
-
-        
-        """
-        File "/raid/s3/opengptx/behzad_shomali/miniforge3/envs/lighteval_env/lib/python3.11/site-packages/transformers/models/llama/modeling_llama.py", line 252, in forward
-    key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
-                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/raid/s3/opengptx/behzad_shomali/miniforge3/envs/lighteval_env/lib/python3.11/site-packages/transformers/cache_utils.py", line 776, in update
-    keys, values = self.layers[layer_idx].update(key_states, value_states, cache_kwargs)
-                   ~~~~~~~~~~~^^^^^^^^^^^
-IndexError: list index out of range
-        """
-
-        # missing_layers_num = end - start
-        # print("Missing Layers num:", missing_layers_num)
-        # for _ in range(missing_layers_num):
-        #     self.layers.append(nn.Identity())
 
         print("Number of final layers:", len(self.layers))
         
@@ -435,7 +386,7 @@ IndexError: list index out of range
         for i, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             if isinstance(decoder_layer, BlockRecursiveModule):
                 pass
-            
+
             hidden_states = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask,
@@ -458,14 +409,158 @@ class RecursiveLlamaForCausalLM(LlamaForCausalLM):
 
     config_class = RecursiveLlamaConfig
 
-    def __init__(self, config: RecursiveLlamaConfig):
+    def __init__(self, config: RecursiveLlamaConfig, use_bf16=True):
         super(LlamaForCausalLM, self).__init__(config)
         
         self.model = RecursiveLlamaModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
+        base_model = LlamaForCausalLM.from_pretrained("meta-llama/Llama-3.2-1B")
+        try:
+            self.model.embed_tokens.load_state_dict(base_model.model.embed_tokens.state_dict())
+        
+            self.model.norm.load_state_dict(base_model.model.norm.state_dict())
+            self.lm_head.load_state_dict(base_model.lm_head.state_dict())
+
+
+            RECURSION_START = config.recursion_start_layer
+            RECURSION_END = config.recursion_end_layer
+
+            # Layers BEFORE the block
+            self.model.layers[:RECURSION_START].load_state_dict(
+                base_model.model.layers[:RECURSION_START].state_dict()
+            )
+
+            # Layers INTO the block
+            # model.model.layers[RECURSION_START] is our BlockRecursiveModule
+            self.model.layers[RECURSION_START].layer_block.load_state_dict(
+                base_model.model.layers[RECURSION_START : RECURSION_END + 1].state_dict()
+            )
+
+            # Layers AFTER the block
+            # The new index is RECURSION_START + 1
+            # The original index is RECURSION_END + 1
+            self.model.layers[RECURSION_START + 1 :].load_state_dict(
+                base_model.model.layers[RECURSION_END + 1 :].state_dict()
+            )
+        except Exception as e:
+            print("Error loading state dict from base model:", e)
+            print("Continuing with randomly initialized weights.")
+
+        if use_bf16:
+            self.model = self.model.to(torch.bfloat16)
+            self.lm_head = self.lm_head.to(torch.bfloat16)
+
+
+        del base_model
+
+
         self.post_init()
+
+    @can_return_tuple
+    @auto_docstring
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        logits_to_keep: Union[int, torch.Tensor] = 0,
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> CausalLMOutputWithPast:
+        r"""
+        Example:
+
+        ```python
+        >>> from transformers import AutoTokenizer, LlamaForCausalLM
+
+        >>> model = LlamaForCausalLM.from_pretrained("meta-llama/Llama-2-7b-hf")
+        >>> tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
+
+        >>> prompt = "Hey, are you conscious? Can you talk to me?"
+        >>> inputs = tokenizer(prompt, return_tensors="pt")
+
+        >>> # Generate
+        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
+        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
+        ```"""
+        outputs: BaseModelOutputWithPast = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            **kwargs,
+        )
+
+        hidden_states = outputs.last_hidden_state
+        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+        logits = self.lm_head(hidden_states[:, slice_indices, :])
+
+        loss = None
+        if labels is not None:
+            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
+
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+    
+class LlamaDecoderLayerWOResidual(GradientCheckpointingLayer):
+    def __init__(self, config: LlamaConfig, layer_idx: int):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+
+        self.self_attn = LlamaAttention(config=config, layer_idx=layer_idx)
+
+        self.mlp = LlamaMLP(config)
+        self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+    @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> torch.Tensor:
+        
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+        # Self Attention
+        hidden_states, _ = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+            **kwargs,
+        )
+        hidden_states = residual + hidden_states
+
+        # Fully Connected
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        return hidden_states
 
 
 AutoConfig.register("recursive-llama", RecursiveLlamaConfig)
