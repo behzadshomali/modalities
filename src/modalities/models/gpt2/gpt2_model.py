@@ -361,7 +361,6 @@ class GPT2LLMConfig(BaseModel):
     recurrent_blocks_indices: Optional[Union[list[int], list[list[int]]]]
     k_last_recurrence_gradient_backprops: Optional[Union[int, list[int]]]
     recurrent_blocks_max_recurrences: Optional[Union[int, list[int]]]
-    always_propagate_first: bool = False
     sample_iterations: Optional[bool] = False
     use_recurrence_embedding: Optional[bool] = False
 
@@ -774,7 +773,35 @@ class GPT2Block(nn.Module):
         x = x + self.attn(self.attention_norm(x))
         x = x + self.mlp(self.ffn_norm(x))
         return x
-    
+
+import torch
+import math
+import torch.nn as nn
+
+class SinusoidalRecurrenceEmbedding(nn.Module):
+    def __init__(self, n_embd):
+        super().__init__()
+        MAX_ALLOWED_RECURRENCE = 128 # use a large value to cover all possible recurrences
+
+        # Create the table of embeddings
+        pe = torch.zeros(MAX_ALLOWED_RECURRENCE + 1, n_embd)
+        position = torch.arange(0, MAX_ALLOWED_RECURRENCE + 1, dtype=torch.float).unsqueeze(1)
+
+        div_term = torch.exp(torch.arange(0, n_embd, 2).float() * 
+                             (-math.log(10000.0) / n_embd))
+
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+
+        # Register as a buffer → NOT a trainable parameter
+        self.register_buffer("pe", pe)
+
+    def forward(self, recurrence_idx):
+        """
+        recurrence_idx: tensor of shape [batch, ...] with integer recurrence values
+        """
+        return self.pe[recurrence_idx]
+
 
 class RecursiveGPT2Block(nn.Module):
     """GPT2Block class."""
@@ -795,7 +822,7 @@ class RecursiveGPT2Block(nn.Module):
         max_recurrence: int,
         k_last_recurrence_gradient_backprop: int = -1,
         sample_iterations: bool = False,
-        always_propagate_first: bool = False
+        use_recurrence_embedding: bool = False,
     ):
         """
         Initializes the GPT2Block.
@@ -836,7 +863,9 @@ class RecursiveGPT2Block(nn.Module):
         self.max_recurrence = max_recurrence
         self.k_last_recurrence_gradient_backprop = k_last_recurrence_gradient_backprop
         self.sample_iterations = sample_iterations
-        self.always_propagate_first = always_propagate_first
+        self.use_recurrence_embedding = use_recurrence_embedding
+        if use_recurrence_embedding:
+            self.recurrence_embd = SinusoidalRecurrenceEmbedding(n_embd)
 
         if activation_type == ActivationType.GELU:
             self.mlp = TransformerMLP(n_embd=n_embd, ffn_hidden=ffn_hidden, bias=bias, dropout=dropout)
@@ -881,15 +910,19 @@ class RecursiveGPT2Block(nn.Module):
             or self.k_last_recurrence_gradient_backprop > self.max_recurrence
         )
 
-        def step(x):
+        def step(x, steps_done):
             """One recurrence step with or without gradient tracking."""
+            if self.use_recurrence_embedding:
+                recurrence_emb = self.recurrence_embd(steps_done)
+                x = x + recurrence_emb
+
             x = x + self.attn(self.attention_norm(x))
             x = x + self.mlp(self.ffn_norm(x))
             
             return x
 
         # first step is always executed independently of self.max_recurrence
-        x = step(x)
+        x = step(x, steps_done=torch.tensor(0, device=x.device))
 
         # if self.sample_iterations is True and the model is in training mode,
         # sample the number of recurrences
@@ -900,7 +933,7 @@ class RecursiveGPT2Block(nn.Module):
         for r in range(recurrences):
             if not full_grad and r < (recurrences - self.k_last_recurrence_gradient_backprop):
                 x = x.detach()
-            x = step(x)
+            x = step(x, steps_done=torch.tensor(r+1, device=x.device))
 
         return x.to(type_)
     
@@ -919,7 +952,6 @@ class GroupRecursiveGPT2Block(nn.Module):
         n_embd: int,
         k_last_recurrence_gradient_backprop: int = -1,
         sample_iterations: bool = False,
-        always_propagate_first: bool = False,
         use_recurrence_embedding: bool = False,
     ):
         """
@@ -931,7 +963,6 @@ class GroupRecursiveGPT2Block(nn.Module):
             k_last_recurrence_gradient_backprop (int): The number of last recurrences to backpropagate gradients through.
                 If set to -1, backpropagation is done through all recurrences. Default is -1.
             sample_iterations (bool): Whether to sample the number of recurrences during training. Defaults to False.
-            always_propagate_first (bool): Whether to always propagate gradients through the first recurrence. Defaults to False.
 
         Note:
             When using GroupRecursiveGPT2Block, the input tensor is feeded to the block 1+max_recurrence times. In other words,
@@ -943,10 +974,10 @@ class GroupRecursiveGPT2Block(nn.Module):
         self.max_recurrence = max_recurrence
         self.k_last_recurrence_gradient_backprop = k_last_recurrence_gradient_backprop
         self.sample_iterations = sample_iterations
-        self.always_propagate_first = always_propagate_first
         self.use_recurrence_embedding = use_recurrence_embedding
         if use_recurrence_embedding:
-            self.recurrence_embd = nn.Embedding(max_recurrence + 1, n_embd)
+            self.recurrence_embd = SinusoidalRecurrenceEmbedding(n_embd)
+
 
         # self._check_max_recurrence()
 
@@ -1025,9 +1056,10 @@ class GPT2LLM(NNModel):
         recurrent_blocks_indices: Union[list[int], list[list[int]]],
         k_last_recurrence_gradient_backprops: Union[int, list[int]],
         recurrent_blocks_max_recurrences: Union[int, list[int]],
-        always_propagate_first: bool = False,
         sample_iterations: bool = False,
         use_recurrence_embedding: bool = False,
+        neft: bool = False,
+        neft_alpha: float = 5.0,
         seed: int = None,
     ):
         """
@@ -1074,8 +1106,9 @@ class GPT2LLM(NNModel):
         self.poe_type = poe_type
         self.recurrent_blocks_indices = recurrent_blocks_indices
         self.blocks_types = []
-        self.always_propagate_first = always_propagate_first
         self.use_recurrence_embedding = use_recurrence_embedding
+        self.neft = neft
+        self.neft_alpha = neft_alpha
 
 
         assert vocab_size is not None
@@ -1091,7 +1124,6 @@ class GPT2LLM(NNModel):
         else:
             self.max_recurrences = recurrent_blocks_max_recurrences
 
-        
         self._check_max_recurrences()
 
         # TODO: dependency injection
@@ -1155,7 +1187,6 @@ class GPT2LLM(NNModel):
                     max_recurrence=max_recurrence,
                     k_last_recurrence_gradient_backprop=k_last_gradient_backprop  ,
                     sample_iterations=sample_iterations,
-                    always_propagate_first=always_propagate_first
                 )
             elif block_type == BlockTypes.GROUP_RECURSIVE:
                 max_recurrence = self._determine_max_recurrence(block_type, recurrent_blocks_cnt)
@@ -1182,7 +1213,6 @@ class GPT2LLM(NNModel):
                     max_recurrence=max_recurrence,
                     k_last_recurrence_gradient_backprop=k_last_gradient_backprop,
                     sample_iterations=sample_iterations,
-                    always_propagate_first=always_propagate_first,
                     n_embd=n_embd,
                     use_recurrence_embedding=use_recurrence_embedding,
                 )
