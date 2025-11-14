@@ -568,7 +568,6 @@ class GPT2ModelFactory:
         use_weight_tying: bool,
         recurrent_blocks_indices: Optional[list[int]] = None,
         k_last_recurrence_gradient_backprops: Optional[Union[int, list[int]]] = None,
-        always_propagate_first: bool = False,
         recurrent_blocks_max_recurrences: Optional[Union[int, list[int]]] = None,
         sample_iterations: Optional[bool] = False,
         use_recurrence_embedding: Optional[bool] = False,
@@ -600,7 +599,6 @@ class GPT2ModelFactory:
             k_last_recurrence_gradient_backprops=k_last_recurrence_gradient_backprops,
             recurrent_blocks_max_recurrences=recurrent_blocks_max_recurrences,
             sample_iterations=sample_iterations,
-            always_propagate_first=always_propagate_first,
             use_recurrence_embedding=use_recurrence_embedding,
         )
         if use_meta_device and use_weight_tying:

@@ -66,13 +66,12 @@ wandb:
 
 recursion_settings:
   type: block
-  start_layer: 8
-  end_layer: 11
+  recursion_indices: [[8,11]]
   num_recursions: 5
-  sample_random_recursion: false
+  sample_random_recursion: true
   track_diagnostics: true
-  neft: true
-  neft_alpha: 5
-  gradually_increase_recursions: false
-  # reset_optimizer: false
-  # increase_steps: [4000, 6000, 8000, 9000, 10000]
+  neft: false
+  gradually_increase_recursions: true
+  reset_optimizer: false
+  increase_steps: [2000, 4000, 6000, 8000]
+  concatenate_iteration_outputs: false
