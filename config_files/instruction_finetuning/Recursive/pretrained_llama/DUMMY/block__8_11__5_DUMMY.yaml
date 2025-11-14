@@ -1,4 +1,4 @@
-eval_device: 0
+# eval_device: 5
 datasets:
 - instruction_col: problem
   is_in_HF: true
@@ -27,8 +27,8 @@ sft:
   disable_tqdm: false
   do_eval: true
   eval_accumulation_steps: 1
-  eval_on_start: true
-  eval_steps: 500
+  eval_on_start: false
+  eval_steps: 1000
   eval_strategy: steps
   fp16: false
   gradient_accumulation_steps: 1
@@ -43,7 +43,7 @@ sft:
   max_length: 1024
   metric_for_best_model: eval_sacrebleu
   num_train_epochs: 1
-  optim: paged_adamw_32bit
+  optim: sgd
   output_dir: /raid/s3/opengptx/behzad_shomali/instruction_tuning/pretrained_llama/block__8_11__5/
   packing: false
   per_device_eval_batch_size: 24
@@ -51,18 +51,18 @@ sft:
   push_to_hub: false
   report_to: wandb
   save_only_model: true
-  save_steps: 1000
+  save_steps: 100000
   save_strategy: steps
   tf32: false
   use_liger_kernel: false
   warmup_ratio: 0.1
   weight_decay: 0.01
-  save_total_limit: 5
+  save_total_limit: 10
 train_size: 100000
 val_size: 8000
 wandb:
   project: NEW_RUNS_Llama_Recursive_IT_OpenMathInstruct-2
-  name: block__8_11__5
+  name: block__8_11__5_DUMMY
 
 recursion_settings:
   type: block
@@ -71,8 +71,8 @@ recursion_settings:
   num_recursions: 5
   sample_random_recursion: false
   track_diagnostics: true
-  neft: true
-  neft_alpha: 5
+  # neft: true
+  # neft_alpha: 5
   gradually_increase_recursions: true
-  reset_optimizer: true
-  increase_steps: [4000, 6000, 8000, 9000, 10000]
+  # reset_optimizer: false
+  increase_steps: [100, 200, 300, 400, 500]
