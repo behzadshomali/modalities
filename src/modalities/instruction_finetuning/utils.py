@@ -153,6 +153,8 @@ def load_config(config_path, overwrite_config=True):
                 k = "residual"
             elif k == "recursion_indices":
                 k = "indices"
+            elif k == "concatenate_iteration_outputs":
+                k = "concat"
             elif k not in ["neft"]:
                 raise ValueError(f"{k} is not valid!")
 
@@ -385,6 +387,8 @@ class DiagnosticCallback(TrainerCallback):
                     f.write(f"{grad.get('grad_mean', 0):.6f},")
                     f.write(f"{grad.get('grad_max', 0):.6f},")
                     f.write(f"{grad.get('grad_std', 0):.6f}\n")
+                
+                self.model.gradient_history = []
 
         print("The results saved to:")
         print(self.recur_cosine_file_name)
@@ -664,10 +668,11 @@ class AsyncEvaluator:
 class EvalCallback(TrainerCallback):
     """Callback to trigger async LightEval CLI on checkpoint saves and at training start."""
 
-    def __init__(self, eval_gpu: int, source_model_path: str, hf_home: str, **kwargs):
+    def __init__(self, eval_gpu: int, eval_on_start: bool, source_model_path: str, hf_home: str, **kwargs):
         self.eval_gpu = eval_gpu
         self.source_model_path = source_model_path
         self.hf_home = hf_home
+        self.eval_on_start = eval_on_start
         self.evaluator = AsyncEvaluator(
             max_workers=1,  
             eval_gpu=eval_gpu, 
@@ -679,8 +684,9 @@ class EvalCallback(TrainerCallback):
 
     def on_train_begin(self, args, state, control, **kwargs):
         """Run initial evaluation on the base model at step 0."""
-        logger.info("🔍 Running initial evaluation on base model at step 0...")
-        self.evaluator.submit_evaluation(self.source_model_path, step=0)
+        if self.eval_on_start:
+            logger.info("🔍 Running initial evaluation on base model at step 0...")
+            self.evaluator.submit_evaluation(self.source_model_path, step=0)
 
     def on_save(self, args, state, control, **kwargs):
         """Trigger evaluation when checkpoint is saved."""
