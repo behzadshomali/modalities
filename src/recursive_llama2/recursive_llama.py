@@ -84,6 +84,11 @@ class BlockRecursiveModule(nn.Module):
         self.neft = neft
         self.neft_alpha = neft_alpha
         self.is_cache_class_overwritten = [False] * len(layer_block)
+        self.concatenate_iteration_outputs = config.concatenate_iteration_outputs
+        if config.concatenate_iteration_outputs:
+            print("Using concatenation of iteration outputs.")
+            self.output_proj= nn.Linear(config.hidden_size * 2, config.hidden_size)
+        
         if track_diagnostics:
             self.gradient_history = []
             self.cosine_similarities = []
@@ -141,12 +146,8 @@ class BlockRecursiveModule(nn.Module):
         if self.track_diagnostics and self.training:
             prev_hidden_states = hidden_states.detach().clone()
 
-        # all_present_key_values = past_key_values  # initial cache
         for iteration in range(num_recursions):
-
-            is_final = (iteration == num_recursions - 1)
-
-            all_present_key_values = past_key_values if is_final else None
+            pre_iteration_hidden_states = hidden_states
             for i, layer in enumerate(self.layer_block):
                 if past_key_values is not None:
                     original_layer_idx = layer.self_attn.layer_idx
@@ -159,6 +160,13 @@ class BlockRecursiveModule(nn.Module):
                 if past_key_values is not None:
                     self._set_current_iteration(layer, past_key_values, iteration_idx=iteration)
 
+                if self.concatenate_iteration_outputs:
+                    if iteration == 0:
+                        concat_input = torch.cat([hidden_states, torch.randn_like(hidden_states)], dim=-1)
+                    else:
+                        concat_input = torch.cat([hidden_states, pre_iteration_hidden_states], dim=-1)
+                    hidden_states = self.output_proj(concat_input)
+                
                 hidden_states = layer(
                     hidden_states,
                     attention_mask=attention_mask,
@@ -240,6 +248,7 @@ class RecursiveLlamaConfig(LlamaConfig):
         reset_optimizer=False,
         increase_steps=None,
         recurrent_blocks_have_residual=True,
+        concatenate_iteration_outputs=False,
         **kwargs,
     ):
 
@@ -287,6 +296,7 @@ class RecursiveLlamaConfig(LlamaConfig):
         self.gradually_increase_recursions = gradually_increase_recursions
         self.reset_optimizer = reset_optimizer
         self.increase_steps = increase_steps if increase_steps is not None else []
+        self.concatenate_iteration_outputs = concatenate_iteration_outputs
 
 
 

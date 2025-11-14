@@ -194,6 +194,7 @@ if "llama" in model_name and "recursion_settings" in config:
         increase_steps=recursion_config.get("increase_steps", None),
         gradually_increase_recursions=recursion_config.get("gradually_increase_recursions", False),
         sample_random_recursion=recursion_config.get("sample_random_recursion", False),
+        concatenate_iteration_outputs=recursion_config.get("concatenate_iteration_outputs", False)
     )
 
     model = RecursiveLlamaForCausalLM(recursive_llama_config, use_bf16=config.get("use_bf16", True)) 
@@ -243,7 +244,12 @@ print_trainable_params(model)
 callbacks = []
 
 if "eval_device" in config:
-    eval_callback = EvalCallback(eval_gpu=config["eval_device"], source_model_path=config['model_name'], hf_home=config['new_cache_dir'])
+    eval_callback = EvalCallback(
+        eval_gpu=config["eval_device"], 
+        eval_on_start=config["sft"].get("eval_on_start", True),
+        source_model_path=config['model_name'], 
+        hf_home=config['new_cache_dir']
+    )
     callbacks.append(eval_callback)
 
 if "recursion_settings" in config:
