@@ -27,6 +27,7 @@ config = RecursiveLlamaConfig(
     sample_random_recursion=False, # Set your defaults
     track_diagnostics=False,
     
+    
 )
 
 # --- 2. Create the new model (with random weights) ---
