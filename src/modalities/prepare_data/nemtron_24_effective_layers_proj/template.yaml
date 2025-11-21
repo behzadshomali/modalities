@@ -1,0 +1,20 @@
+settings:
+  src_path: XXX.jsonl
+  dst_path: XXX.pbin
+  index_path: XXX.idx
+  jq_pattern: .content
+  num_cpus: ${node_env:num_cpus}
+  eod_token: 'null'
+  processing_batch_size: 1000
+  raw_samples_queue_size: 300
+  processed_samples_queue_size: 300
+
+  
+tokenizer:
+  component_key: tokenizer
+  config:
+    padding: false
+    pretrained_model_name_or_path: meta-llama/Llama-3.2-3B
+    truncation: false
+  # variant_key: pretrained_sp_tokenizer
+  variant_key: pretrained_hf_tokenizer
