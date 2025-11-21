@@ -19,6 +19,7 @@ from modalities.config.config import (
     ActivationCheckpointedModelConfig,
     AdamOptimizerConfig,
     AdamWOptimizerConfig,
+    AdafactorOptimizerConfig,
     BatchSamplerConfig,
     CheckpointSavingConfig,
     CLMCrossEntropyLossConfig,
@@ -188,6 +189,7 @@ COMPONENTS = [
     # optmizers
     ComponentEntity("optimizer", "adam", OptimizerFactory.get_adam, AdamOptimizerConfig),
     ComponentEntity("optimizer", "adam_w", OptimizerFactory.get_adam_w, AdamWOptimizerConfig),
+    ComponentEntity("optimizer", "adafactor", OptimizerFactory.get_adafactor, AdafactorOptimizerConfig),
     ComponentEntity(
         "optimizer",
         "fsdp1_checkpointed",

@@ -160,6 +160,14 @@ class AdamWOptimizerConfig(BaseModel):
     weight_decay: float
     weight_decay_groups_excluded: list[str]
 
+class AdafactorOptimizerConfig(BaseModel):
+    lr: float
+    wrapped_model: PydanticPytorchModuleType
+    beta2_decay: float
+    eps: tuple[Optional[float], float]
+    d: float
+    weight_decay: float
+    weight_decay_groups_excluded: list[str]
 
 class DummyLRSchedulerConfig(BaseModel):
     optimizer: PydanticOptimizerIFType

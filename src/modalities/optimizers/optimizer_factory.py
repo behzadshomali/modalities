@@ -6,7 +6,7 @@ from torch.distributed.fsdp import FSDPModule as FSDP2
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP1
 from torch.distributed.tensor import DTensor
-from torch.optim import Adam, AdamW, Optimizer
+from torch.optim import Adam, AdamW, Adafactor, Optimizer
 
 from modalities.checkpointing.checkpoint_loading import FSDP1CheckpointLoadingIF
 from modalities.exceptions import OptimizerError
@@ -40,6 +40,26 @@ class OptimizerFactory:
     ) -> Optimizer:
         optimizer_groups = get_optimizer_groups(wrapped_model, weight_decay, weight_decay_groups_excluded)
         optimizer = AdamW(params=optimizer_groups, lr=lr, betas=betas, eps=eps)
+        return optimizer
+    
+    def get_adafactor(
+        lr: float,
+        wrapped_model: nn.Module,
+        beta2_decay: float,
+        eps: tuple[float | None, float],
+        d: float,
+        weight_decay: float,
+        weight_decay_groups_excluded: list[str],
+    ) -> Optimizer:
+
+        optimizer_groups = get_optimizer_groups(wrapped_model, weight_decay, weight_decay_groups_excluded)
+        optimizer = Adafactor(
+            params=optimizer_groups,
+            lr=lr,
+            beta2_decay=beta2_decay,
+            eps=eps,
+            d=d,
+        )
         return optimizer
 
     @staticmethod
