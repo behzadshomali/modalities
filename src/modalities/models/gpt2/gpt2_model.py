@@ -698,6 +698,30 @@ class TransformerMLP(nn.Module):
         return x
 
 
+class SinusoidalRecurrenceEmbedding(nn.Module):
+    def __init__(self, n_embd):
+        super().__init__()
+        MAX_ALLOWED_RECURRENCE = 128 # use a large value to cover all possible recurrences
+
+        # Create the table of embeddings
+        pe = torch.zeros(MAX_ALLOWED_RECURRENCE + 1, n_embd)
+        position = torch.arange(0, MAX_ALLOWED_RECURRENCE + 1, dtype=torch.float).unsqueeze(1)
+
+        div_term = torch.exp(torch.arange(0, n_embd, 2).float() * 
+                             (-math.log(10000.0) / n_embd))
+
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+
+        # Register as a buffer → NOT a trainable parameter
+        self.register_buffer("pe", pe)
+
+    def forward(self, recurrence_idx):
+        """
+        recurrence_idx: tensor of shape [batch, ...] with integer recurrence values
+        """
+        return self.pe[recurrence_idx]
+
 class GPT2Block(nn.Module):
     """GPT2Block class."""
 
@@ -774,34 +798,6 @@ class GPT2Block(nn.Module):
         x = x + self.mlp(self.ffn_norm(x))
         return x
 
-import torch
-import math
-import torch.nn as nn
-
-class SinusoidalRecurrenceEmbedding(nn.Module):
-    def __init__(self, n_embd):
-        super().__init__()
-        MAX_ALLOWED_RECURRENCE = 128 # use a large value to cover all possible recurrences
-
-        # Create the table of embeddings
-        pe = torch.zeros(MAX_ALLOWED_RECURRENCE + 1, n_embd)
-        position = torch.arange(0, MAX_ALLOWED_RECURRENCE + 1, dtype=torch.float).unsqueeze(1)
-
-        div_term = torch.exp(torch.arange(0, n_embd, 2).float() * 
-                             (-math.log(10000.0) / n_embd))
-
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-
-        # Register as a buffer → NOT a trainable parameter
-        self.register_buffer("pe", pe)
-
-    def forward(self, recurrence_idx):
-        """
-        recurrence_idx: tensor of shape [batch, ...] with integer recurrence values
-        """
-        return self.pe[recurrence_idx]
-
 
 class RecursiveGPT2Block(nn.Module):
     """GPT2Block class."""
@@ -844,8 +840,8 @@ class RecursiveGPT2Block(nn.Module):
                 If set to -1, backpropagation is done through all recurrences. Default is -1.
 
         Note:
-            When using RecursiveGPT2Block, the input tensor is feeded to the block 1+max_recurrence times. In other words,
-            when max_recurrence=0 (although not allowed), the RecursiveGPT2Block behaves like a standard GPT2Block.
+            When using RecursiveGPT2Block, the input tensor is feeded to the block max_recurrence (i.e. L) times. In other words,
+            when max_recurrence=1, the RecursiveGPT2Block behaves like a standard GPT2Block.
         """
         super().__init__()
         self.attention_norm = attention_norm
@@ -900,15 +896,6 @@ class RecursiveGPT2Block(nn.Module):
         Returns:
             torch.Tensor: Output tensor.
         """
-        
-        # ensure output type is the same as input type
-        type_ = x.dtype
-
-        # Determine whether to backprop through all steps
-        full_grad = (
-            self.k_last_recurrence_gradient_backprop == -1
-            or self.k_last_recurrence_gradient_backprop > self.max_recurrence
-        )
 
         def step(x, steps_done):
             """One recurrence step with or without gradient tracking."""
@@ -920,20 +907,26 @@ class RecursiveGPT2Block(nn.Module):
             x = x + self.mlp(self.ffn_norm(x))
             
             return x
+        
+        # ensure output type is the same as input type
+        type_ = x.dtype
 
-        # first step is always executed independently of self.max_recurrence
-        x = step(x, steps_done=torch.tensor(0, device=x.device))
+        # Determine whether to backprop through all steps
+        full_grad = (
+            self.k_last_recurrence_gradient_backprop == -1
+            or self.k_last_recurrence_gradient_backprop > self.max_recurrence
+        )
 
         # if self.sample_iterations is True and the model is in training mode,
         # sample the number of recurrences
         if self.sample_iterations and self.training:
-            recurrences = torch.randint(0, self.max_recurrence+1, (1,)).item()
+            recurrences = torch.randint(1, self.max_recurrence+1, (1,)).item()
         else:
             recurrences = self.max_recurrence
         for r in range(recurrences):
             if not full_grad and r < (recurrences - self.k_last_recurrence_gradient_backprop):
                 x = x.detach()
-            x = step(x, steps_done=torch.tensor(r+1, device=x.device))
+            x = step(x, steps_done=torch.tensor(r, device=x.device))
 
         return x.to(type_)
     
@@ -965,8 +958,8 @@ class GroupRecursiveGPT2Block(nn.Module):
             sample_iterations (bool): Whether to sample the number of recurrences during training. Defaults to False.
 
         Note:
-            When using GroupRecursiveGPT2Block, the input tensor is feeded to the block 1+max_recurrence times. In other words,
-            when max_recurrence=0 (although not allowed), the GroupRecursiveGPT2Block behaves like a standard GPT2Block.
+            When using GroupRecursiveGPT2Block, the input tensor is feeded to the block max_recurrence (i.e. L) times. In other words,
+            when max_recurrence=1, the GroupRecursiveGPT2Block behaves like a standard GPT2Block.
         """
         super().__init__()
         self.gpt2_blocks = nn.ModuleList(gpt2_blocks)
@@ -991,14 +984,6 @@ class GroupRecursiveGPT2Block(nn.Module):
         Returns:
             torch.Tensor: Output tensor.
         """
-        # ensure output type is the same as input type
-        type_ = x.dtype
-
-        # Determine whether to backprop through all steps
-        full_grad = (
-            self.k_last_recurrence_gradient_backprop == -1
-            or self.k_last_recurrence_gradient_backprop > self.max_recurrence
-        )
 
         def step(x, steps_done):
             """One recurrence step with or without gradient tracking."""
@@ -1010,20 +995,26 @@ class GroupRecursiveGPT2Block(nn.Module):
                 x = block(x)
             
             return x
+        
+        # ensure output type is the same as input type
+        type_ = x.dtype
 
-        # first step is always executed independently of self.max_recurrence
-        x = step(x, steps_done=torch.tensor(0, device=x.device))
+        # Determine whether to backprop through all steps
+        full_grad = (
+            self.k_last_recurrence_gradient_backprop == -1
+            or self.k_last_recurrence_gradient_backprop > self.max_recurrence
+        )
 
         # if self.sample_iterations is True and the model is in training mode,
         # sample the number of recurrences
         if self.sample_iterations and self.training:
-            recurrences = torch.randint(0, self.max_recurrence+1, (1,)).item()
+            recurrences = torch.randint(1, self.max_recurrence+1, (1,)).item()
         else:
             recurrences = self.max_recurrence
         for r in range(recurrences):
             if not full_grad and r < (recurrences - self.k_last_recurrence_gradient_backprop):
                 x = x.detach()
-            x = step(x, steps_done=torch.tensor(r+1, device=x.device))
+            x = step(x, steps_done=torch.tensor(r, device=x.device))
             
                 
         return x.to(type_)
