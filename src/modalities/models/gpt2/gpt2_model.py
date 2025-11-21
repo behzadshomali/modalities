@@ -358,9 +358,9 @@ class GPT2LLMConfig(BaseModel):
     ffn_norm_config: LayerNormWrapperConfig
     lm_head_norm_config: LayerNormWrapperConfig
     use_weight_tying: bool
-    recurrent_blocks_indices: Optional[Union[list[int], list[list[int]]]]
-    k_last_recurrence_gradient_backprops: Optional[Union[int, list[int]]]
-    recurrent_blocks_max_recurrences: Optional[Union[int, list[int]]]
+    recurrent_blocks_indices: Optional[Union[list[int], list[list[int]]]] = []
+    k_last_recurrence_gradient_backprops: Optional[Union[int, list[int]]] = []
+    recurrent_blocks_max_recurrences: Optional[Union[int, list[int]]] = 0
     sample_iterations: Optional[bool] = False
     use_recurrence_embedding: Optional[bool] = False
 
