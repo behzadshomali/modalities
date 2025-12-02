@@ -16,7 +16,7 @@ settings:
   intervals:
     training_log_interval_in_steps: 10
     checkpointing_interval_in_steps: 22000
-    evaluation_interval_in_steps: 1000
+    evaluation_interval_in_steps: 2000
   consistency_enforcement:
     enforce_tokens_per_step_consistency: true
     enforce_last_step_logged: false

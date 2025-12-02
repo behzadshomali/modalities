@@ -1,0 +1,17 @@
+settings:
+  dst_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_4.pbin
+  eod_token: 'null'
+  index_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_4.idx
+  jq_pattern: .text
+  num_cpus: ${node_env:num_cpus}
+  processed_samples_queue_size: 300
+  processing_batch_size: 1000
+  raw_samples_queue_size: 300
+  src_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/Nemotron-CC-highQuality-sampled_data_part_4.jsonl
+tokenizer:
+  component_key: tokenizer
+  config:
+    padding: false
+    pretrained_model_name_or_path: openai-community/gpt2
+    truncation: false
+  variant_key: pretrained_hf_tokenizer
