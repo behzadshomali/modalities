@@ -61,13 +61,13 @@ class TestTensorParallelism:
                 "gelu",
                 Path("tests/fsdp2_parallelization/tp_test_configs/fsdp2_config.yaml"),
                 Path("tests/fsdp2_parallelization/tp_test_configs/tp_config.yaml"),
-                22755,
+                22235,
             ),
             (
                 "swiglu",
                 Path("tests/fsdp2_parallelization/tp_test_configs/fsdp2_config.yaml"),
                 Path("tests/fsdp2_parallelization/tp_test_configs/tp_config.yaml"),
-                22756,
+                22246,
             ),
         ],
     )
@@ -117,11 +117,11 @@ class TestTensorParallelism:
 
             # Ensure models use the correct MLP
             if activation_type == "gelu":
-                assert isinstance(fsdp2_model.transformer.h[0].mlp, TransformerMLP)
-                assert isinstance(tp_model.transformer.h[0].mlp, TransformerMLP)
+                assert isinstance(fsdp2_model.transformer.h["0"].mlp, TransformerMLP)
+                assert isinstance(tp_model.transformer.h["0"].mlp, TransformerMLP)
             elif activation_type == "swiglu":
-                assert isinstance(fsdp2_model.transformer.h[0].mlp, SwiGLU)
-                assert isinstance(tp_model.transformer.h[0].mlp, SwiGLU)
+                assert isinstance(fsdp2_model.transformer.h["0"].mlp, SwiGLU)
+                assert isinstance(tp_model.transformer.h["0"].mlp, SwiGLU)
 
             # Ensure models are sharded correctly
             assert "tp" in tp_model.transformer.wte.weight.device_mesh.mesh_dim_names
