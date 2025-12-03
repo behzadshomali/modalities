@@ -20,6 +20,7 @@ from modalities.config.config import (
     AdamOptimizerConfig,
     AdamWOptimizerConfig,
     AdafactorOptimizerConfig,
+    MuonOptimizerConfig,
     BatchSamplerConfig,
     CheckpointSavingConfig,
     CLMCrossEntropyLossConfig,
@@ -190,6 +191,7 @@ COMPONENTS = [
     ComponentEntity("optimizer", "adam", OptimizerFactory.get_adam, AdamOptimizerConfig),
     ComponentEntity("optimizer", "adam_w", OptimizerFactory.get_adam_w, AdamWOptimizerConfig),
     ComponentEntity("optimizer", "adafactor", OptimizerFactory.get_adafactor, AdafactorOptimizerConfig),
+    ComponentEntity("optimizer", "muon", OptimizerFactory.get_muon, MuonOptimizerConfig), # TODO: double check if it's integrated correctly; doesn't seem like that doesn't make any differenece
     ComponentEntity(
         "optimizer",
         "fsdp1_checkpointed",

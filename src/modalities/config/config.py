@@ -169,6 +169,19 @@ class AdafactorOptimizerConfig(BaseModel):
     weight_decay: float
     weight_decay_groups_excluded: list[str]
 
+class MuonOptimizerConfig(BaseModel):
+    lr: float
+    wrapped_model: PydanticPytorchModuleType
+    adamw_eps: float
+    adamw_betas: tuple[float, float]
+    weight_decay: float
+    momentum: float = 0.95
+    nesterov: bool = True
+    ns_steps: int = 5
+    weight_decay_groups_excluded: list[str]
+    
+   
+
 class DummyLRSchedulerConfig(BaseModel):
     optimizer: PydanticOptimizerIFType
 

@@ -1,12 +1,14 @@
 import re
 from pathlib import Path
 
+from kernels import get_kernel
+
 import torch.nn as nn
 from torch.distributed.fsdp import FSDPModule as FSDP2
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP1
 from torch.distributed.tensor import DTensor
-from torch.optim import Adam, AdamW, Adafactor, Optimizer
+from torch.optim import Adam, AdamW, Adafactor, Optimizer, Muon
 
 from modalities.checkpointing.checkpoint_loading import FSDP1CheckpointLoadingIF
 from modalities.exceptions import OptimizerError
@@ -15,6 +17,88 @@ from modalities.util import get_local_number_of_trainable_parameters, print_rank
 from modalities.utils.typing_utils import FSDPX
 
 OptimizerGroups = list[dict[str, list[nn.Parameter] | float]]
+
+def default_is_muon(name, x):
+    skip_keys = ["embed_tokens", "lm_head", "tok_embeddings", "output"]
+    return x.ndim >= 2 and not any(key in name for key in skip_keys)
+
+
+def get_default_muon_param_groups(model, weight_decay, weight_decay_groups_excluded, is_muon_func=default_is_muon):
+    muon_params_wd, muon_names_wd = [], []
+    muon_params_no_wd, muon_names_no_wd = [], []
+    non_muon_params_wd, non_muon_names_wd = [], []
+    non_muon_params_no_wd, non_muon_names_no_wd = [], []
+    
+    # Determine if weight decay should be applied
+    has_weight_decay_groups = weight_decay > 0 and len(weight_decay_groups_excluded) > 0
+    
+    for n, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        
+        # Check if parameter should be excluded from weight decay
+        exclude_wd = any(excluded in n for excluded in weight_decay_groups_excluded) if has_weight_decay_groups else False
+        
+        if is_muon_func(n, p):
+            if exclude_wd:
+                muon_params_no_wd.append(p)
+                muon_names_no_wd.append(n)
+            else:
+                muon_params_wd.append(p)
+                muon_names_wd.append(n)
+        else:
+            if exclude_wd:
+                non_muon_params_no_wd.append(p)
+                non_muon_names_no_wd.append(n)
+            else:
+                non_muon_params_wd.append(p)
+                non_muon_names_wd.append(n)
+    
+    # Build parameter groups based on whether we have weight decay groups
+    if not has_weight_decay_groups:
+        # Simple case: 2 groups (muon/non-muon with same weight decay)
+        return [
+            {
+                "params": muon_params_wd + muon_params_no_wd,
+                "names": muon_names_wd + muon_names_no_wd,
+                "use_muon": True,
+                "weight_decay": weight_decay,
+            },
+            {
+                "params": non_muon_params_wd + non_muon_params_no_wd,
+                "names": non_muon_names_wd + non_muon_names_no_wd,
+                "use_muon": False,
+                "weight_decay": weight_decay,
+            },
+        ]
+    else:
+        # Complex case: 4 groups (muon/non-muon × with/without weight decay)
+        return [
+            {
+                "params": muon_params_wd,
+                "names": muon_names_wd,
+                "use_muon": True,
+                "weight_decay": weight_decay,
+            },
+            {
+                "params": muon_params_no_wd,
+                "names": muon_names_no_wd,
+                "use_muon": True,
+                "weight_decay": 0.0,
+            },
+            {
+                "params": non_muon_params_wd,
+                "names": non_muon_names_wd,
+                "use_muon": False,
+                "weight_decay": weight_decay,
+            },
+            {
+                "params": non_muon_params_no_wd,
+                "names": non_muon_names_no_wd,
+                "use_muon": False,
+                "weight_decay": 0.0,
+            },
+        ]
 
 
 class OptimizerFactory:
@@ -40,6 +124,32 @@ class OptimizerFactory:
     ) -> Optimizer:
         optimizer_groups = get_optimizer_groups(wrapped_model, weight_decay, weight_decay_groups_excluded)
         optimizer = AdamW(params=optimizer_groups, lr=lr, betas=betas, eps=eps)
+        return optimizer
+
+    def get_muon(
+        lr: float,
+        adamw_eps: float,
+        adamw_betas: tuple[float, float],
+        momentum: float,
+        nesterov: bool,
+        ns_steps: int,
+        weight_decay: float,
+        weight_decay_groups_excluded: list[str],
+        wrapped_model: nn.Module,
+    ) -> Optimizer:
+        optimizer = get_kernel("motif-technologies/optimizer")
+        # get_default_muon_param_groups = optimizer.muon.get_default_muon_param_groups
+        
+        params = get_default_muon_param_groups(wrapped_model, weight_decay, weight_decay_groups_excluded)
+        optimizer = optimizer.Muon(
+            params,
+            lr=lr,
+            momentum=momentum,
+            nesterov=nesterov,
+            ns_steps=ns_steps,
+            adamw_betas=adamw_betas,
+            adamw_eps=adamw_eps
+        )
         return optimizer
     
     def get_adafactor(
