@@ -51,6 +51,7 @@ from modalities.config.config import (
     OneCycleLRSchedulerConfig,
     PackedMemMapDatasetContinuousConfig,
     PackedMemMapDatasetMegatronConfig,
+    ParallelDegreeConfig,
     PreTrainedHFTokenizerConfig,
     PreTrainedSPTokenizerConfig,
     RawAppStateConfig,
@@ -81,31 +82,47 @@ from modalities.logging_broker.subscriber_impl.subscriber_factory import (
 from modalities.loss_functions import CLMCrossEntropyLoss
 from modalities.models.coca.coca_model import CoCa, CoCaConfig
 from modalities.models.coca.collator import CoCaCollateFnConfig, CoCaCollatorFn
-from modalities.models.components.layer_norms import LayerNormConfig, RMSLayerNorm, RMSLayerNormConfig
+from modalities.models.components.layer_norms import (
+    LayerNormConfig,
+    PytorchRMSLayerNormConfig,
+    RMSLayerNorm,
+    RMSLayerNormConfig,
+)
 from modalities.models.gpt2.collator import GPT2LLMCollateFn
 from modalities.models.gpt2.gpt2_model import GPT2LLMConfig
 from modalities.models.huggingface.huggingface_model import HuggingFacePretrainedModel, HuggingFacePretrainedModelConfig
 from modalities.models.model_factory import GPT2ModelFactory, ModelFactory
+from modalities.models.parallelism.pipeline_parallelism import ComponentSelectorFromPipeline, PipelineFactory
+from modalities.models.parallelism.pipeline_parallelism_configs import (
+    ComponentSelectorFromPipelineConfig,
+    PipelineConfig,
+    ScheduledPipelineConfig,
+    StagedPipelineConfig,
+)
+from modalities.models.parallelism.stages_generator import GPT2LLMStagesGenerator
+from modalities.models.parallelism.stages_generator_configs import GPT2LLMStagesGeneratorConfig
 from modalities.nn.model_initialization.composed_initialization import (
     ComposedInitializationRoutines,
     ComposedModelInitializationConfig,
 )
 from modalities.optimizers.lr_schedulers import DummyLRScheduler
 from modalities.optimizers.optimizer_factory import OptimizerFactory
-from modalities.running_env.fsdp.device_mesh import DeviceMeshConfig, get_device_mesh
+from modalities.running_env.fsdp.device_mesh import DeviceMeshConfig, get_device_mesh, get_parallel_degree
 from modalities.tokenization.tokenizer_wrapper import PreTrainedHFTokenizer, PreTrainedSPTokenizer
 from modalities.training.gradient_clipping.fsdp_gradient_clipper import (
-    DummyGradientClipper,
     FSDP1GradientClipper,
     FSDP1LoggingOnlyGradientClipper,
     FSDP2GradientClipper,
     FSDP2LoggingOnlyGradientClipper,
 )
 from modalities.training.gradient_clipping.fsdp_gradient_clipper_config import (
-    DummyGradientClipperConfig,
-    FSDPDummyGradientClipperConfig,
-    FSDPGradientClipperConfig,
+    FSDP1DummyGradientClipperConfig,
+    FSDP1GradientClipperConfig,
+    FSDP2DummyGradientClipperConfig,
+    FSDP2GradientClipperConfig,
 )
+from modalities.utils.debug_components import Debugging, HookRegistration
+from modalities.utils.debugging_configs import DebuggingConfig, NaNHookConfig, PrintForwardHookConfig
 from modalities.utils.mfu import GPT2MFUCalculator
 from modalities.utils.number_conversion import (
     LocalNumBatchesFromNumSamplesConfig,
@@ -120,6 +137,8 @@ from modalities.utils.number_conversion import (
     NumTokensFromPackedMemMapDatasetContinuousConfig,
 )
 from modalities.utils.profilers.batch_generator import RandomDatasetBatchGenerator, RandomDatasetBatchGeneratorConfig
+from modalities.utils.profilers.steppable_component_configs import SteppableForwardPassConfig
+from modalities.utils.profilers.steppable_components import SteppableForwardPass
 
 
 @dataclass
@@ -174,8 +193,15 @@ COMPONENTS = [
     ComponentEntity(
         "model", "debugging_enriched", ModelFactory.get_debugging_enriched_model, DebuggingEnrichedModelConfig
     ),
+    ComponentEntity("pipeline", "staged", PipelineFactory.get_staged_pipeline, StagedPipelineConfig),
+    ComponentEntity("pipeline", "scheduled", PipelineFactory.get_scheduled_pipeline, ScheduledPipelineConfig),
+    ComponentEntity("pipeline", "selector", ComponentSelectorFromPipeline.select, ComponentSelectorFromPipelineConfig),
+    ComponentEntity("pipeline", "builder", PipelineFactory.get_pipeline, PipelineConfig),
+    # Pipeline Stages Generators
+    ComponentEntity("stages_generator", "gpt2_stages_generator", GPT2LLMStagesGenerator, GPT2LLMStagesGeneratorConfig),
     # Device mesh
     ComponentEntity("device_mesh", "default", get_device_mesh, DeviceMeshConfig),
+    ComponentEntity("number_conversion", "parallel_degree", get_parallel_degree, ParallelDegreeConfig),
     # weight initializers
     ComponentEntity(
         "model_initialization",
@@ -209,7 +235,6 @@ COMPONENTS = [
     # tokenizers
     ComponentEntity("tokenizer", "pretrained_hf_tokenizer", PreTrainedHFTokenizer, PreTrainedHFTokenizerConfig),
     ComponentEntity("tokenizer", "pretrained_sp_tokenizer", PreTrainedSPTokenizer, PreTrainedSPTokenizerConfig),
-    # ComponentEntity("tokenizer", "llama_tokenizer_fast", GPT2TokenizerFast, None),  # TODO
     # datasets
     ComponentEntity("dataset", "mem_map_dataset", DatasetFactory.get_mem_map_dataset, MemMapDatasetConfig),
     ComponentEntity(
@@ -310,16 +335,16 @@ COMPONENTS = [
     # layer norms
     ComponentEntity("layer_norm", "rms_norm", RMSLayerNorm, RMSLayerNormConfig),
     ComponentEntity("layer_norm", "layer_norm", nn.LayerNorm, LayerNormConfig),
+    ComponentEntity("layer_norm", "rms_norm_pytorch", nn.RMSNorm, PytorchRMSLayerNormConfig),
     # gradient clippers
-    ComponentEntity("gradient_clipper", "fsdp1", FSDP1GradientClipper, FSDPGradientClipperConfig),
+    ComponentEntity("gradient_clipper", "fsdp1", FSDP1GradientClipper, FSDP1GradientClipperConfig),
     ComponentEntity(
-        "gradient_clipper", "fsdp1_logging_only", FSDP1LoggingOnlyGradientClipper, FSDPDummyGradientClipperConfig
+        "gradient_clipper", "fsdp1_logging_only", FSDP1LoggingOnlyGradientClipper, FSDP1DummyGradientClipperConfig
     ),
-    ComponentEntity("gradient_clipper", "fsdp2", FSDP2GradientClipper, FSDPGradientClipperConfig),
+    ComponentEntity("gradient_clipper", "fsdp2", FSDP2GradientClipper, FSDP2GradientClipperConfig),
     ComponentEntity(
-        "gradient_clipper", "fsdp2_logging_only", FSDP2LoggingOnlyGradientClipper, FSDPDummyGradientClipperConfig
+        "gradient_clipper", "fsdp2_logging_only", FSDP2LoggingOnlyGradientClipper, FSDP2DummyGradientClipperConfig
     ),
-    ComponentEntity("gradient_clipper", "dummy", DummyGradientClipper, DummyGradientClipperConfig),
     # MFU calculators
     ComponentEntity("mfu_calculator", "gpt2", GPT2MFUCalculator, GPT2MFUCalculatorConfig),
     # Number conversion
@@ -400,5 +425,21 @@ COMPONENTS = [
         "num_steps_from_raw_dataset_index",
         NumberConversion.get_num_steps_from_raw_dataset_index,
         NumStepsFromRawDatasetIndexConfig,
+    ),
+    # Profiling components
+    ComponentEntity(
+        "steppable_component",
+        "forward_pass",
+        SteppableForwardPass,
+        SteppableForwardPassConfig,
+    ),
+    # Debugging components
+    ComponentEntity("debugging", "settings", Debugging, DebuggingConfig),
+    ComponentEntity("model_debugging_hook", "nan_hook", HookRegistration.register_nan_hooks, NaNHookConfig),
+    ComponentEntity(
+        "model_debugging_hook",
+        "print_forward_hook",
+        HookRegistration.register_print_forward_hooks,
+        PrintForwardHookConfig,
     ),
 ]
