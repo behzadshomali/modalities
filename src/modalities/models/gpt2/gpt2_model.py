@@ -1253,6 +1253,7 @@ class GPT2LLM(NNModel):
                         ffn_hidden=ffn_hidden,
                         attention_norm=attention_norm_config.norm_type.value(**dict(attention_norm_config.config)),
                         ffn_norm=ffn_norm_config.norm_type.value(**dict(ffn_norm_config.config)),
+                        enforce_swiglu_hidden_dim_multiple_of=enforce_swiglu_hidden_dim_multiple_of
                     )
                     gpt2_blocks.append(gpt2_block)
                 
@@ -1283,7 +1284,7 @@ class GPT2LLM(NNModel):
                 wte=nn.Embedding(num_embeddings=vocab_size, embedding_dim=n_embd),
                 wpe=wpe,
                 drop=nn.Dropout(dropout),
-                h=nn.ModuleDict(str(layer_idx): blocks_list[layer_idx] for layer_idx in range(lene(blocks_list))),
+                h=nn.ModuleDict({str(layer_idx): blocks_list[layer_idx] for layer_idx in range(len(blocks_list))}),
                 lm_head_norm=lm_head_norm_config.norm_type.value(**dict(lm_head_norm_config.config)),
                 # NOTE: If we make the bias configurable, we must update the number of parameters calculation
                 # in the test_initialization_fsdp1.py, accordingly.
