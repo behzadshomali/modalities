@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import overload
+from typing import overload, List, Tuple
 
 import torch
 from torch.nn import CrossEntropyLoss
@@ -165,3 +165,147 @@ class NCELoss(Loss):
             contiguous_embedding1, contiguous_embedding2, embedding1.device, self.is_asymmetric, self.temperature
         )
         return loss
+
+
+class MTPCrossEntropyLoss(Loss):
+    def __init__(
+        self, 
+        target_key: str, 
+        prediction_key: str, 
+        mtp_prediction_key: str = "mtp_logits", 
+        mtp_lambda: float = 1.0,
+        tag: str = "MTPCrossEntropyLoss"
+    ):
+        """
+        Args:
+            target_key: Key to retrieve targets from the batch.
+            prediction_key: Key to retrieve the MAIN head logits.
+            mtp_prediction_key: Key to retrieve the list of MTP head logits.
+            mtp_lambda: Weighting factor for the MTP auxiliary loss. 
+                        Paper suggests 1.0 or similar.
+            tag: Tag for logging.
+        """
+        super().__init__(tag)
+        self.target_key = target_key
+        self.prediction_key = prediction_key
+        self.mtp_prediction_key = mtp_prediction_key
+        self.mtp_lambda = mtp_lambda
+        
+        # Mean over the tokens in the local-batch
+        self.loss_fun = CrossEntropyLoss(reduction="mean")
+
+    @overload
+    def __call__(self, forward_batch: InferenceResultBatch) -> torch.Tensor:
+        ...
+
+    @overload
+    def __call__(self, outputs: torch.Tensor, mtp_outputs: List[torch.Tensor], targets: torch.Tensor) -> torch.Tensor:
+        ...
+
+    def __call__(self, *args, **kwargs) -> torch.Tensor:
+        labels, lm_logits, mtp_logits_list = self._parse_arguments(args, kwargs)
+
+        # Move labels to correct device
+        labels = labels.to(lm_logits.device).long()
+        
+        # --- 1. Main Head Loss (Next Token Prediction) ---
+        # If input is x_1...x_t, labels should be x_2...x_{t+1}
+        
+        # Flatten and compute
+        loss = self.loss_fun(
+            lm_logits.view(-1, lm_logits.size(-1)), 
+            labels.view(-1)
+        )
+
+        # --- 2. MTP Heads Loss ---
+        if mtp_logits_list:
+            mtp_loss_sum = 0.0
+            
+            for i, mtp_logits in enumerate(mtp_logits_list):
+                # i=0 -> Head predicts 2nd future token (t+2)
+                # i=1 -> Head predicts 3rd future token (t+3)
+                
+                # The 'distance' from the Main Head target is i + 1
+                shift = i + 1
+                
+                # We crop the END of the logits (cannot predict future for last tokens)
+                # We crop the START of the labels (to align t with t+2)
+                
+                slice_logits = mtp_logits[:, :-shift, :].contiguous()
+                slice_labels = labels[:, shift:].contiguous()
+                
+                if slice_labels.size(1) > 0:
+                    current_mtp_loss = self.loss_fun(
+                        slice_logits.view(-1, slice_logits.size(-1)),
+                        slice_labels.view(-1)
+                    )
+                    mtp_loss_sum += current_mtp_loss
+            
+            # Combine losses
+            # loss = loss + (self.mtp_lambda * (mtp_loss_sum / len(mtp_logits_list)))
+            loss = (loss + (self.mtp_lambda * mtp_loss_sum)) / (1 + len(mtp_logits_list))
+
+        return loss
+
+    def _parse_arguments(
+        self,
+        args: list,
+        kwargs: dict,
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
+        
+        labels = None
+        lm_logits = None
+        mtp_logits_list = []
+
+        # Scenario 1: InferenceResultBatch passed directly
+        if len(args) == 1 and hasattr(args[0], "get_targets"):
+            forward_batch = args[0]
+            labels = forward_batch.get_targets(self.target_key)
+            predictions = forward_batch.get_predictions(self.prediction_key)
+            
+            # Handle if predictions is a dict (likely scenario for MTP model)
+            if isinstance(predictions, dict):
+                lm_logits = predictions["logits"]
+                mtp_logits_list = predictions.get(self.mtp_prediction_key, [])
+            else:
+                # Fallback if model returns just logits and we rely on separate key
+                lm_logits = predictions
+                # Attempt to get MTP from batch if stored separately (unlikely but possible)
+                try:
+                    mtp_logits_list = forward_batch.get_predictions(self.mtp_prediction_key)
+                except:
+                    mtp_logits_list = []
+
+        # Scenario 2: Keyword arguments with forward_batch
+        elif "forward_batch" in kwargs:
+            forward_batch = kwargs["forward_batch"]
+            labels = forward_batch.get_targets(self.target_key)
+            predictions = forward_batch.get_predictions(self.prediction_key)
+            
+            if isinstance(predictions, dict):
+                lm_logits = predictions["logits"]
+                mtp_logits_list = predictions.get(self.mtp_prediction_key, [])
+            else:
+                lm_logits = predictions
+
+        # Scenario 3: Explicit Tensors passed (outputs, targets)
+        # This is trickier with MTP because we need the list of extra logits
+        elif "outputs" in kwargs and "targets" in kwargs:
+            outputs = kwargs["outputs"]
+            labels = kwargs["targets"]
+            
+            if isinstance(outputs, dict):
+                lm_logits = outputs["logits"]
+                mtp_logits_list = outputs.get(self.mtp_prediction_key, [])
+            elif isinstance(outputs, (list, tuple)):
+                 # Assuming format (logits, [mtp1, mtp2])
+                 lm_logits = outputs[0]
+                 if len(outputs) > 1:
+                     mtp_logits_list = outputs[1]
+            else:
+                lm_logits = outputs
+        
+        if labels is None or lm_logits is None:
+             raise TypeError("Invalid arguments for MTPCrossEntropyLoss.__call__")
+
+        return labels, lm_logits, mtp_logits_list

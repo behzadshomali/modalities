@@ -6,6 +6,7 @@ from typing import Annotated, Mapping, Optional, Any, overload, Union
 
 import torch
 import torch.nn as nn
+
 from pydantic import BaseModel, Field, model_validator, validator
 
 from modalities.config.lookup_enum import LookupEnum
@@ -386,6 +387,7 @@ class GPT2LLMConfig(BaseModel):
     use_recurrence_embedding: Optional[bool] = False
     seed: Optional[int] = None
     enforce_swiglu_hidden_dim_multiple_of: int = 256
+    n_future_tokens: int = 1
 
     @model_validator(mode="after")
     def check_divisibility(self) -> "GPT2LLMConfig":
@@ -1105,6 +1107,7 @@ class GPT2LLM(NNModel):
         neft_alpha: float = 5.0,
         seed: Optional[int] = None,
         enforce_swiglu_hidden_dim_multiple_of: int = 256,
+        n_future_tokens: int = 1
     ):
         """
         Initializes the GPT2LLM object.
@@ -1149,13 +1152,14 @@ class GPT2LLM(NNModel):
         self.prediction_key = prediction_key
         self.sequence_length = sequence_length
         self.n_embd = n_embd
-        self.n_layer = n_layer
+        self.n_layer = n_layer - n_future_tokens + 1 # adjust for future tokens prediction
         self.poe_type = poe_type
         self.recurrent_blocks_indices = recurrent_blocks_indices
         self.blocks_types = []
         self.use_recurrence_embedding = use_recurrence_embedding
         self.neft = neft
         self.neft_alpha = neft_alpha
+        self.n_future_tokens = n_future_tokens
 
 
         assert vocab_size is not None
@@ -1193,7 +1197,7 @@ class GPT2LLM(NNModel):
         blocks_list = []
         recurrent_blocks_cnt = 0
         n = 0
-        while n < n_layer:
+        while n < self.n_layer:
             # determine block type
             block_type = self._determine_block_type(n)
             k_last_gradient_backprop = None if block_type == BlockTypes.STANDARD else self.k_last_recurrence_gradient_backprops[recurrent_blocks_cnt]
@@ -1277,7 +1281,7 @@ class GPT2LLM(NNModel):
             if block_type == BlockTypes.RECURSIVE or block_type == BlockTypes.GROUP_RECURSIVE:
                 recurrent_blocks_cnt += 1
 
-        assert n == n_layer, f"Expected {n_layer} blocks, but got {n}!"
+        assert n == self.n_layer, f"Expected {self.n_layer} blocks, but got {n}!"
 
         self.transformer = nn.ModuleDict(
             dict(
@@ -1299,6 +1303,24 @@ class GPT2LLM(NNModel):
             self.transformer.wte.weight = (
                 self.transformer.lm_head.weight
             )  # https://paperswithcode.com/method/weight-tying
+        
+        if self.n_future_tokens > 1:
+            self.mtp_heads = nn.ModuleDict({
+                str(i+2): GPT2Block(
+                    n_embd=n_embd,
+                    bias=bias,
+                    n_head_q=n_head_q,
+                    n_head_kv=n_head_kv,
+                    activation_type=activation_type,
+                    attention_impl=attention_implementation,
+                    attention_config=attention_config,
+                    dropout=dropout,
+                    ffn_hidden=ffn_hidden,
+                    attention_norm=attention_norm_config.norm_type.value(**dict(attention_norm_config.config)),
+                    ffn_norm=ffn_norm_config.norm_type.value(**dict(ffn_norm_config.config)),
+                    enforce_swiglu_hidden_dim_multiple_of=enforce_swiglu_hidden_dim_multiple_of
+                ) for i in range(self.n_future_tokens - 1)             
+            })
 
     def _check_max_recurrences(self) -> None:
         if self.blocks_types is not None:
@@ -1410,29 +1432,50 @@ class GPT2LLM(NNModel):
         Returns:
             torch.Tensor: A tensor containing output logits.
         """
-        device = inputs.device
-        seq_len = inputs.size(1)
-        assert seq_len <= self.sequence_length, f"Cannot forward sequence of length {seq_len}, the model's maximum "
-        f"input sequence length is only {self.sequence_length}."
 
-        # forward the GPT model itself
-        h = (
-            self.transformer.wte(inputs) if hasattr(self.transformer, "wte") else inputs
-        )  # token embeddings of shape (b, seq_len, n_embd)
+        def shared_trunk_forward():
+            device = inputs.device
+            seq_len = inputs.size(1)
+            assert seq_len <= self.sequence_length, f"Cannot forward sequence of length {seq_len}, the model's maximum "
+            f"input sequence length is only {self.sequence_length}."
 
-        if self.poe_type is PositionTypes.ABSOLUTE and hasattr(self.transformer, "wpe"):
-            pos = torch.arange(0, seq_len, dtype=torch.long, device=device)  # shape (seq_len)
-            pos_emb = self.transformer.wpe(pos)  # position embeddings of shape (seq_len, n_embd)
-            h = h + pos_emb
+            # forward the GPT model itself
+            h = (
+                self.transformer.wte(inputs) if hasattr(self.transformer, "wte") else inputs
+            )  # token embeddings of shape (b, seq_len, n_embd)
 
-        # TODO: use drop out also without absolute position embedding?
-        h = self.transformer.drop(h) if hasattr(self.transformer, "drop") else h
+            if self.poe_type is PositionTypes.ABSOLUTE and hasattr(self.transformer, "wpe"):
+                pos = torch.arange(0, seq_len, dtype=torch.long, device=device)  # shape (seq_len)
+                pos_emb = self.transformer.wpe(pos)  # position embeddings of shape (seq_len, n_embd)
+                h = h + pos_emb
 
-        for layer_idx in self.transformer.h:
-            h = self.transformer.h[layer_idx](h)
-        h = self.transformer.lm_head_norm(h) if hasattr(self.transformer, "lm_head_norm") else h
-        h = self.transformer.lm_head(h) if hasattr(self.transformer, "lm_head") else h
-        return h
+            # TODO: use drop out also without absolute position embedding?
+            h = self.transformer.drop(h) if hasattr(self.transformer, "drop") else h
+
+            for layer_idx in self.transformer.h:
+                h = self.transformer.h[layer_idx](h)
+            h = self.transformer.lm_head_norm(h) if hasattr(self.transformer, "lm_head_norm") else h
+            return h
+        
+        shared_respres = shared_trunk_forward()
+
+        main_logits = self.transformer.lm_head(shared_respres) if hasattr(self.transformer, "lm_head") else None # shared_respres
+        if self.n_future_tokens > 1:
+            mtp_logits = []
+            for i, head in self.mtp_heads.items():
+                # The input to these heads is the SAME 'x' (shared trunk)
+                # This allows gradients from future tokens to update your looped trunk
+                head_repres = head(shared_respres)
+                head_logits = self.transformer.lm_head(head_repres) if hasattr(self.transformer, "lm_head") else None # head_repres
+                mtp_logits.append(head_logits)
+            
+            return {
+                "logits": main_logits,
+                "mtp_logits": mtp_logits
+            }
+        
+        
+        return main_logits
 
 
 def manual_scaled_dot_product_attention(
@@ -1478,3 +1521,5 @@ def manual_scaled_dot_product_attention(
     attn_weight = torch.softmax(attn_weight, dim=-1)
     attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
     return attn_weight @ value
+
+

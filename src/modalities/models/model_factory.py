@@ -583,6 +583,7 @@ class GPT2ModelFactory:
         use_meta_device: Optional[bool] = False,
         seed: Optional[int] = None,
         enforce_swiglu_hidden_dim_multiple_of: int = 256,
+        n_future_tokens: int = 1
     ) -> GPT2LLM:
         config = dict(
             sample_key=sample_key,
@@ -611,6 +612,7 @@ class GPT2ModelFactory:
             sample_iterations=sample_iterations,
             use_recurrence_embedding=use_recurrence_embedding,
             enforce_swiglu_hidden_dim_multiple_of=enforce_swiglu_hidden_dim_multiple_of,
+            n_future_tokens=n_future_tokens
         )
         if use_meta_device and use_weight_tying:
             raise ValueError(

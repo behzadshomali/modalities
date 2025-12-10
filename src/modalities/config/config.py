@@ -80,6 +80,12 @@ class CLMCrossEntropyLossConfig(BaseModel):
     target_key: str
     prediction_key: str
 
+class MTPCrossEntropyLossConfig(BaseModel):
+    target_key: str
+    prediction_key: str
+    mtp_prediction_key: str
+    mtp_lambda: float
+
 
 # Checkpointing
 class SaveEveryKStepsCheckpointingStrategyConfig(BaseModel):
