@@ -151,7 +151,7 @@ class SwiGLU(nn.Module):
         return self.W_2(self.silu(self.W(x)) * self.V(x))
 
 
-def model_predict_batch(model: nn.Module, batch: DatasetBatch) -> InferenceResultBatch:
+def model_predict_batch(model: nn.Module, batch: DatasetBatch, sampling_std: float = None) -> InferenceResultBatch:
     """
     Predicts the output for a batch of samples using the given model.
 
@@ -162,6 +162,6 @@ def model_predict_batch(model: nn.Module, batch: DatasetBatch) -> InferenceResul
     Returns:
         InferenceResultBatch: The batch of inference results containing the predicted targets and predictions.
     """
-    forward_result = model(batch.samples)
+    forward_result = model(batch.samples, sampling_std=sampling_std)
     result_batch = InferenceResultBatch(targets=batch.targets, predictions=forward_result)
     return result_batch

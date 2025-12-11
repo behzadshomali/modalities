@@ -34,7 +34,7 @@ class AppState(Stateful):
     https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html
     """
 
-    def __init__(self, model: nn.Module, optimizer: Optimizer, lr_scheduler: Optional[LRScheduler] = None):
+    def __init__(self, model: nn.Module, optimizer: Optimizer, lr_scheduler: Optional[LRScheduler] = None, std_scheduler = None):
         """Initializes the AppState object.
 
         Args:
@@ -46,6 +46,7 @@ class AppState(Stateful):
         self._optimizer = optimizer
         self._lr_scheduler = lr_scheduler
         self._is_loaded = False
+        self.std_scheduler = std_scheduler
 
     @property
     def is_loaded(self) -> bool:

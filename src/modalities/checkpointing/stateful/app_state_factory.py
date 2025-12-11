@@ -8,6 +8,7 @@ from torch.optim.lr_scheduler import LRScheduler
 
 from modalities.checkpointing.fsdp.fsdp_checkpoint_loading import DCPCheckpointLoading
 from modalities.checkpointing.stateful.app_state import AppState
+from modalities.optimizers.std_schedulers import STDScheduler
 
 
 class AppStateFactory:
@@ -15,7 +16,7 @@ class AppStateFactory:
 
     @staticmethod
     def get_raw_app_state(
-        model: nn.Module, optimizer: Optimizer, lr_scheduler: Optional[LRScheduler] = None
+        model: nn.Module, optimizer: Optimizer, lr_scheduler: Optional[LRScheduler] = None, std_scheduler: Optional[STDScheduler] = None
     ) -> AppState:
         """Creates a new (non-checkpoint loaded) AppState object from an instantiated
         model, optimizer, and optional learning rate scheduler.
@@ -28,7 +29,7 @@ class AppStateFactory:
         Returns:
             AppState: The AppState object.
         """
-        app_state = AppState(model=model, optimizer=optimizer, lr_scheduler=lr_scheduler)
+        app_state = AppState(model=model, optimizer=optimizer, lr_scheduler=lr_scheduler, std_scheduler=std_scheduler)
         return app_state
 
     @staticmethod

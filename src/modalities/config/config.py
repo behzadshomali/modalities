@@ -30,6 +30,7 @@ from modalities.config.pydantic_if_types import (
     PydanticPytorchModuleType,
     PydanticSamplerIFType,
     PydanticTokenizerIFType,
+    PydanticSTDSchedulerIFType
 )
 from modalities.config.utils import parse_torch_device
 from modalities.running_env.env_utils import (
@@ -242,6 +243,12 @@ class CosineAnnealingLRSchedulerConfig(BaseModel):
     last_epoch: Annotated[int, Field(strict=True, ge=-1)] = -1
 
 
+class CosineSTDSchedulerConfig(BaseModel):
+    start_factor: Annotated[float, Field(strict=True, gt=0.0)]
+    end_factor: Annotated[float, Field(strict=True, ge=0.0)]
+    total_steps: Annotated[int, Field(strict=True, gt=0)]
+
+
 class FSDP1CheckpointedOptimizerConfig(BaseModel):
     checkpoint_loading: PydanticFSDP1CheckpointLoadingIFType
     checkpoint_path: Path
@@ -379,6 +386,7 @@ class RawAppStateConfig(BaseModel):
     model: PydanticPytorchModuleType
     optimizer: PydanticOptimizerIFType
     lr_scheduler: Optional[PydanticLRSchedulerIFType] = None
+    std_scheduler: Optional[PydanticSTDSchedulerIFType] = None
 
 
 class DCPAppStateConfig(BaseModel):

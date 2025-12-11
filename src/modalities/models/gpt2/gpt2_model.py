@@ -1019,12 +1019,24 @@ class GroupRecursiveGPT2Block(nn.Module):
         self.max_recurrence = max_recurrence
         self.k_last_recurrence_gradient_backprop = k_last_recurrence_gradient_backprop
         self.sample_iterations = sample_iterations
+        self.current_recurrence = 0
+        if self.sample_iterations:
+            self.std = None
         self.use_recurrence_embedding = use_recurrence_embedding
         if use_recurrence_embedding:
             self.recurrence_embd = SinusoidalRecurrenceEmbedding(n_embd)
-
+        
 
         # self._check_max_recurrence()
+
+    def set_sampling_std(self, std: float):
+        """
+        Sets the standard deviation for sampling the number of recurrences.
+
+        Args:
+            std (float): The standard deviation to be set.
+        """
+        self.std = std * self.max_recurrence / 2
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -1060,15 +1072,18 @@ class GroupRecursiveGPT2Block(nn.Module):
         # if self.sample_iterations is True and the model is in training mode,
         # sample the number of recurrences
         if self.sample_iterations and self.training:
-            recurrences = torch.randint(1, self.max_recurrence+1, (1,)).item()
+            # sample from a normal distribution
+            recurrences = self.max_recurrence + torch.normal(mean=0, std=self.std, size=(1,)).item()
+            recurrences = min(recurrences, self.max_recurrence*2)
+            recurrences = max(recurrences, 1)
         else:
             recurrences = self.max_recurrence
-        for r in range(recurrences):
-            if not full_grad and r < (recurrences - self.k_last_recurrence_gradient_backprop):
+        self.current_recurrence = round(recurrences)
+        for r in range(self.current_recurrence):
+            if not full_grad and r < (self.current_recurrence - self.k_last_recurrence_gradient_backprop):
                 x = x.detach()
             x = step(x, steps_done=torch.tensor(r, device=x.device))
-            
-                
+
         return x.to(type_)
 
 
@@ -1105,6 +1120,7 @@ class GPT2LLM(NNModel):
         neft_alpha: float = 5.0,
         seed: Optional[int] = None,
         enforce_swiglu_hidden_dim_multiple_of: int = 256,
+        # osicallate_recurrence: bool = False,
     ):
         """
         Initializes the GPT2LLM object.
@@ -1156,6 +1172,8 @@ class GPT2LLM(NNModel):
         self.use_recurrence_embedding = use_recurrence_embedding
         self.neft = neft
         self.neft_alpha = neft_alpha
+        # self.osicallate_recurrence = osicallate_recurrence
+        self.recurrence_usage_stats = {}
 
 
         assert vocab_size is not None
@@ -1385,7 +1403,7 @@ class GPT2LLM(NNModel):
         """
         ...
 
-    def forward(self, inputs: dict[str, torch.Tensor] | torch.Tensor) -> dict[str, torch.Tensor] | torch.Tensor:
+    def forward(self, inputs: dict[str, torch.Tensor] | torch.Tensor, sampling_std: float = None) -> dict[str, torch.Tensor] | torch.Tensor:
         """
         Forward pass of the GPT2LLM module.
 
@@ -1396,11 +1414,11 @@ class GPT2LLM(NNModel):
             dict[str, torch.Tensor] | torch.Tensor: Model output.
         """
         if isinstance(inputs, dict):
-            return {self.prediction_key: self.forward_impl(inputs[self.sample_key])}
+            return {self.prediction_key: self.forward_impl(inputs[self.sample_key], sampling_std=sampling_std)}
         else:
-            return self.forward_impl(inputs)
+            return self.forward_impl(inputs, sampling_std=sampling_std)
 
-    def forward_impl(self, inputs: torch.Tensor) -> torch.Tensor:
+    def forward_impl(self, inputs: torch.Tensor, sampling_std=None) -> torch.Tensor:
         """
         Forward pass implementation of the GPT2LLM module.
 
@@ -1410,6 +1428,8 @@ class GPT2LLM(NNModel):
         Returns:
             torch.Tensor: A tensor containing output logits.
         """
+        if sampling_std is not None:
+            pass
         device = inputs.device
         seq_len = inputs.size(1)
         assert seq_len <= self.sequence_length, f"Cannot forward sequence of length {seq_len}, the model's maximum "
@@ -1429,7 +1449,22 @@ class GPT2LLM(NNModel):
         h = self.transformer.drop(h) if hasattr(self.transformer, "drop") else h
 
         for layer_idx in self.transformer.h:
+            if self.blocks_types[int(layer_idx)] == BlockTypes.GROUP_RECURSIVE:
+                block: GroupRecursiveGPT2Block = self.transformer.h[layer_idx]  # type: ignore
+                # set the std for sampling the number of recurrences based on the training steps
+
+                if self.training:# and sampling_std is not None:
+                    block.set_sampling_std(sampling_std)
+
             h = self.transformer.h[layer_idx](h)
+
+            if self.blocks_types[int(layer_idx)] == BlockTypes.GROUP_RECURSIVE:
+                block: GroupRecursiveGPT2Block = self.transformer.h[layer_idx]  # type: ignore
+                # record recurrence usage stats
+                if int(layer_idx) not in self.recurrence_usage_stats:
+                    self.recurrence_usage_stats[int(layer_idx)] = []
+                self.recurrence_usage_stats[int(layer_idx)].append(block.current_recurrence)
+
         h = self.transformer.lm_head_norm(h) if hasattr(self.transformer, "lm_head_norm") else h
         h = self.transformer.lm_head(h) if hasattr(self.transformer, "lm_head") else h
         return h

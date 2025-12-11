@@ -109,6 +109,7 @@ class Trainer:
         scheduler: LRScheduler,
         loss_fun: Loss,
         micro_batch_id: int,
+        std_scheduler = None,
         scheduled_pipeline: Optional[Pipeline] = None,
     ) -> tuple[bool, int, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
@@ -151,7 +152,8 @@ class Trainer:
             loss = torch.mean(torch.stack(losses)).to(losses[0].device) if scheduled_pipeline.is_last_pp_stage else None
         else:
             # else continue with loss calculation
-            result_batch = model_predict_batch(model=model, batch=batch)
+            current_std = std_scheduler.std if std_scheduler is not None else None
+            result_batch = model_predict_batch(model=model, batch=batch, sampling_std=current_std)
             loss = loss_fun(result_batch)
             (loss / self.gradient_acc_steps).backward()
 
@@ -159,6 +161,7 @@ class Trainer:
             gradient_norm_score = self.gradient_clipper.clip_gradients()
             optimizer.step()
             scheduler.step()
+            current_std = std_scheduler.step() if std_scheduler is not None else None
             optimizer.zero_grad()
             step_performed = True
         else:
@@ -168,6 +171,9 @@ class Trainer:
         num_train_steps_done = Trainer._get_num_train_steps_done(
             micro_batch_id=micro_batch_id, gradient_acc_steps=self.gradient_acc_steps
         )
+
+        self._track_recurrences_on_wandb(model, self.evaluation_result_publisher, num_train_steps_done, current_std)
+
         return step_performed, num_train_steps_done, loss, gradient_norm_score
 
     def train(
@@ -199,6 +205,7 @@ class Trainer:
         model = app_state.model
         optimizer = app_state.optimizer
         lr_scheduler = app_state.lr_scheduler
+        std_scheduler = app_state.std_scheduler
         model.train()
 
         cumulated_losses = self._reset_tracked_losses()
@@ -242,6 +249,7 @@ class Trainer:
                 model=model,
                 optimizer=optimizer,
                 scheduler=lr_scheduler,
+                std_scheduler=std_scheduler,
                 loss_fun=loss_fun,
                 micro_batch_id=micro_batch_id,
                 scheduled_pipeline=scheduled_pipeline,
@@ -372,6 +380,31 @@ class Trainer:
         else:
             cumulated_loss_and_gradient_norm = cumulated_loss_and_gradient_norm.to("cpu")
         return cumulated_loss_and_gradient_norm
+    
+    def _track_recurrences_on_wandb(self, model, evaluation_result_publisher, num_train_steps_done, current_std):
+        if self.global_rank == 0:
+            if hasattr(model, "recurrence_usage_stats"):
+                recurrence_usage_stats = model.recurrence_usage_stats
+                for layer_idx, recurrences in recurrence_usage_stats.items():
+                    avg_recurrence = sum(recurrences) / len(recurrences)
+                    metrics = EvaluationResultBatch(
+                        losses={},
+                        metrics={
+                            f"recurrence_stats/avg_recurrence_layer_{layer_idx}": ResultItem(
+                                torch.tensor(avg_recurrence), decimal_places=2
+                            ),
+                            f"recurrence_stats/current_std": ResultItem(torch.tensor(current_std), decimal_places=4),
+                        },
+                        throughput_metrics={},
+                        dataloader_tag="recurrence_stats",
+                        num_train_steps_done=num_train_steps_done,
+                    )
+                    self._publish_evaluation_result(
+                        evaluation_result_publisher=evaluation_result_publisher,
+                        evaluation_result=metrics,
+                    )
+            model.recurrence_usage_stats = {}
+        
 
     @staticmethod
     def _publish_progress(
