@@ -248,6 +248,11 @@ class CosineSTDSchedulerConfig(BaseModel):
     end_factor: Annotated[float, Field(strict=True, ge=0.0)]
     total_steps: Annotated[int, Field(strict=True, gt=0)]
 
+class LinearSTDSchedulerConfig(BaseModel):
+    start_factor: Annotated[float, Field(strict=True, gt=0.0)]
+    end_factor: Annotated[float, Field(strict=True, ge=0.0)]
+    total_steps: Annotated[int, Field(strict=True, gt=0)]
+
 
 class FSDP1CheckpointedOptimizerConfig(BaseModel):
     checkpoint_loading: PydanticFSDP1CheckpointLoadingIFType

@@ -2,7 +2,7 @@ import logging
 import math
 from abc import abstractmethod
 from enum import Enum
-from typing import Annotated, Mapping, Optional, Any, overload, Union
+from typing import Annotated, Callable, Mapping, Optional, Any, overload, Union
 
 import torch
 import torch.nn as nn
@@ -386,6 +386,7 @@ class GPT2LLMConfig(BaseModel):
     use_recurrence_embedding: Optional[bool] = False
     seed: Optional[int] = None
     enforce_swiglu_hidden_dim_multiple_of: int = 256
+    use_LNS: bool = False
 
     @model_validator(mode="after")
     def check_divisibility(self) -> "GPT2LLMConfig":
@@ -782,6 +783,8 @@ class GPT2Block(nn.Module):
         attention_norm: nn.Module,
         ffn_norm: nn.Module,
         enforce_swiglu_hidden_dim_multiple_of: int,
+        lns_getter: Callable[[], nn.Module],
+        increment_fn: Callable[[], None],
     ):
         """
         Initializes the GPT2Block.
@@ -826,6 +829,9 @@ class GPT2Block(nn.Module):
             )
         else:
             raise NotImplementedError("unimplemented activation")
+        
+        self._lns_getter = lns_getter
+        self._increment_fn = increment_fn
 
     def _check_ffn_hidden_dim(self, n_embd: int, ffn_hidden: int) -> None:
         expected_hidden_dim = 4 * n_embd
@@ -846,8 +852,22 @@ class GPT2Block(nn.Module):
         Returns:
             torch.Tensor: Output tensor.
         """
-        x = x + self.attn(self.attention_norm(x))
-        x = x + self.mlp(self.ffn_norm(x))
+        residual = x
+        x = self.attention_norm(x)
+
+        scale_factor = self._lns_getter()
+        x = scale_factor * x
+
+        x = residual + self.attn(x)
+
+        residual = x
+        x = self.ffn_norm(x)
+
+        scale_factor = self._lns_getter()
+        x = scale_factor * x
+
+        x = residual + self.mlp(x)
+        self._increment_fn()
         return x
 
 
@@ -1038,6 +1058,7 @@ class GroupRecursiveGPT2Block(nn.Module):
         """
         self.std = std * self.max_recurrence / 2
 
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass of the GroupRecursiveGPT2Block.
@@ -1069,8 +1090,6 @@ class GroupRecursiveGPT2Block(nn.Module):
             or self.k_last_recurrence_gradient_backprop > self.max_recurrence
         )
 
-        # if self.sample_iterations is True and the model is in training mode,
-        # sample the number of recurrences
         if self.sample_iterations and self.training:
             # sample from a normal distribution
             recurrences = self.max_recurrence + torch.normal(mean=0, std=self.std, size=(1,)).item()
@@ -1120,6 +1139,7 @@ class GPT2LLM(NNModel):
         neft_alpha: float = 5.0,
         seed: Optional[int] = None,
         enforce_swiglu_hidden_dim_multiple_of: int = 256,
+        use_LNS: bool = False,
         # osicallate_recurrence: bool = False,
     ):
         """
@@ -1174,6 +1194,8 @@ class GPT2LLM(NNModel):
         self.neft_alpha = neft_alpha
         # self.osicallate_recurrence = osicallate_recurrence
         self.recurrence_usage_stats = {}
+        self.processed_layers_in_this_run = 0
+        self.use_LNS = use_LNS
 
 
         assert vocab_size is not None
@@ -1233,7 +1255,9 @@ class GPT2LLM(NNModel):
                     # a meta device!
                     attention_norm=attention_norm_config.norm_type.value(**dict(attention_norm_config.config)),
                     ffn_norm=ffn_norm_config.norm_type.value(**dict(ffn_norm_config.config)),
-                    enforce_swiglu_hidden_dim_multiple_of=enforce_swiglu_hidden_dim_multiple_of
+                    enforce_swiglu_hidden_dim_multiple_of=enforce_swiglu_hidden_dim_multiple_of,
+                    lns_getter=self.get_LNS_factor,
+                    increment_fn=self.increment_processed_layers_cnt,
                 )
             elif block_type == BlockTypes.RECURSIVE:
                 max_recurrence = self._determine_max_recurrence(block_type, recurrent_blocks_cnt)
@@ -1271,7 +1295,9 @@ class GPT2LLM(NNModel):
                         ffn_hidden=ffn_hidden,
                         attention_norm=attention_norm_config.norm_type.value(**dict(attention_norm_config.config)),
                         ffn_norm=ffn_norm_config.norm_type.value(**dict(ffn_norm_config.config)),
-                        enforce_swiglu_hidden_dim_multiple_of=enforce_swiglu_hidden_dim_multiple_of
+                        enforce_swiglu_hidden_dim_multiple_of=enforce_swiglu_hidden_dim_multiple_of,
+                        lns_getter=self.get_LNS_factor,
+                        increment_fn=self.increment_processed_layers_cnt,
                     )
                     gpt2_blocks.append(gpt2_block)
                 
@@ -1363,7 +1389,26 @@ class GPT2LLM(NNModel):
         else:
             return 0  # not used for standard blocks, but needed to create the block
 
-            
+    def increment_processed_layers_cnt(self):
+        """Increments the count of processed layers in this run."""
+        self.processed_layers_in_this_run += 1
+
+    def get_processed_layers_cnt(self) -> int:
+        """Returns the count of processed layers in this run."""
+        return self.processed_layers_in_this_run
+
+    def reset_processed_layers_cnt(self):
+        """Resets the count of processed layers in this run to zero."""
+        self.processed_layers_in_this_run = 0    
+
+    def get_LNS_factor(self) -> float:
+        """
+        Returns the LNS factor based on the number of processed layers.
+        """
+        if not self.use_LNS:
+            return 1.0 # no scaling
+        # return 1.0 / math.sqrt(self.get_processed_layers_cnt() + 1)
+        return  1.0 / (self.get_processed_layers_cnt() + 1)
 
     def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False):
         """
@@ -1467,6 +1512,7 @@ class GPT2LLM(NNModel):
 
         h = self.transformer.lm_head_norm(h) if hasattr(self.transformer, "lm_head_norm") else h
         h = self.transformer.lm_head(h) if hasattr(self.transformer, "lm_head") else h
+        self.reset_processed_layers_cnt()
         return h
 
 

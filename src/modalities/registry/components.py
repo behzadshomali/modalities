@@ -6,7 +6,7 @@ import torch.nn as nn
 from pydantic import BaseModel
 from torch.utils.data import BatchSampler, DistributedSampler, SequentialSampler
 
-from modalities.optimizers.std_schedulers import CosineSTDScheduler
+from modalities.optimizers.std_schedulers import CosineSTDScheduler, LinearSTDScheduler
 
 from modalities.checkpointing.checkpoint_saving import CheckpointSaving
 from modalities.checkpointing.checkpoint_saving_strategies import (
@@ -31,6 +31,7 @@ from modalities.config.config import (
     ConstantLRSchedulerConfig,
     CosineAnnealingLRSchedulerConfig,
     CosineSTDSchedulerConfig,
+    LinearSTDSchedulerConfig,
     DCPAppStateConfig,
     DCPCheckpointLoadingConfig,
     DCPCheckpointSavingConfig,
@@ -240,6 +241,7 @@ COMPONENTS = [
         "scheduler", "cosine_annealing_lr", torch.optim.lr_scheduler.CosineAnnealingLR, CosineAnnealingLRSchedulerConfig
     ),
     ComponentEntity("scheduler", "cosine_std", CosineSTDScheduler, CosineSTDSchedulerConfig),
+    ComponentEntity("scheduler", "linear_std", LinearSTDScheduler, LinearSTDSchedulerConfig),
     # tokenizers
     ComponentEntity("tokenizer", "pretrained_hf_tokenizer", PreTrainedHFTokenizer, PreTrainedHFTokenizerConfig),
     ComponentEntity("tokenizer", "pretrained_sp_tokenizer", PreTrainedSPTokenizer, PreTrainedSPTokenizerConfig),
