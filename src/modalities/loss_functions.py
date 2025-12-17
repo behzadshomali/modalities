@@ -85,6 +85,76 @@ class CLMCrossEntropyLoss(Loss):
         else:
             raise TypeError("Invalid arguments for CLMCrossEntropyLoss.__call__")
         return labels, lm_logits
+    
+
+class CLMRecurrenceCosineSimPenaltyLoss(CLMCrossEntropyLoss):
+    def __init__(
+        self, 
+        target_key: str, 
+        prediction_key: str, 
+        penalty_weight: float = 1.0, 
+        tag: str = "CLMRecurrenceCosineSimPenaltyLoss"
+    ):
+        """
+        Args:
+            target_key: Key to retrieve targets from the batch.
+            prediction_key: Key to retrieve predictions from the batch.
+            penalty_weight: Coefficient (lambda) for the recurrence penalty term.
+            tag: Name of the loss module.
+        """
+        super().__init__(target_key, prediction_key, tag)
+        self.penalty_weight = penalty_weight
+
+    def __call__(self, *args, **kwargs) -> torch.Tensor:
+        # 1. Parse arguments using the parent class logic to get raw inputs
+        labels, raw_outputs = self._parse_arguments(args, kwargs)
+
+        # 2. Extract Logits and Penalty
+        # Check if the output is the dictionary format provided in the prompt
+        recurrence_embedding_cosine_similarity = torch.tensor(-10.0, device=labels.device)
+        recurrence_embedding_mse_similarity = torch.tensor(-10.0, device=labels.device)
+        
+        if isinstance(raw_outputs, dict):
+            # Extract logits (h)
+            lm_logits = raw_outputs.get("logits")
+            
+            # Extract the similarity penalty if it exists
+            if "recurrence_embedding_cosine_similarity" in raw_outputs:
+                recurrence_embedding_cosine_similarity = raw_outputs["recurrence_embedding_cosine_similarity"]
+                
+                # Ensure penalty is on the correct device
+                if recurrence_embedding_cosine_similarity.device != lm_logits.device:
+                    recurrence_embedding_cosine_similarity = recurrence_embedding_cosine_similarity.to(lm_logits.device)
+            if "recurrence_embedding_mse_similarity" in raw_outputs:
+                recurrence_embedding_mse_similarity = raw_outputs["recurrence_embedding_mse_similarity"]
+                
+                # Ensure penalty is on the correct device
+                if recurrence_embedding_mse_similarity.device != lm_logits.device:
+                    recurrence_embedding_mse_similarity = recurrence_embedding_mse_similarity.to(lm_logits.device)
+        else:
+            # Fallback: Assumption that raw_outputs are just the logits (standard behavior)
+            lm_logits = raw_outputs
+
+        # 3. Standard Cross Entropy Calculation
+        # Move labels to correct device
+        labels = labels.to(lm_logits.device)
+        shift_logits = lm_logits.contiguous()
+        shift_labels = labels.contiguous().long()
+
+        # Flatten tokens for CE Loss
+        ce_loss = self.loss_fun(
+            shift_logits.view(-1, shift_logits.size(-1)), 
+            shift_labels.view(-1)
+        )
+
+        # 4. Combine Losses
+        # L_total = L_ce + (weight * L_penalty)
+
+        # (1,1), (0,1), (0.5,0) --> y = 4x^2 - 4x + 1
+        penalty = 4 * (recurrence_embedding_cosine_similarity ** 2) - 4 * recurrence_embedding_cosine_similarity + 1
+        total_loss = ce_loss + (self.penalty_weight * penalty)
+
+        return total_loss, ce_loss, self.penalty_weight * penalty
 
 
 def nce_loss(

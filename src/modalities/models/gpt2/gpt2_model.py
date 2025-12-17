@@ -387,6 +387,7 @@ class GPT2LLMConfig(BaseModel):
     seed: Optional[int] = None
     enforce_swiglu_hidden_dim_multiple_of: int = 256
     use_LNS: bool = False
+    penalize_recurrence_embedding_similarity: bool = False
 
     @model_validator(mode="after")
     def check_divisibility(self) -> "GPT2LLMConfig":
@@ -1018,6 +1019,7 @@ class GroupRecursiveGPT2Block(nn.Module):
         k_last_recurrence_gradient_backprop: int = -1,
         sample_iterations: bool = False,
         use_recurrence_embedding: bool = False,
+        penalize_recurrence_embedding_similarity: bool = False,
     ):
         """
         Initializes the GroupRecursiveGPT2Block.
@@ -1045,6 +1047,10 @@ class GroupRecursiveGPT2Block(nn.Module):
         self.use_recurrence_embedding = use_recurrence_embedding
         if use_recurrence_embedding:
             self.recurrence_embd = SinusoidalRecurrenceEmbedding(n_embd)
+        
+        self.penalize_recurrence_embedding_similarity = penalize_recurrence_embedding_similarity
+        if penalize_recurrence_embedding_similarity:
+            self.cos = nn.CosineSimilarity(dim=-1)
         
 
         # self._check_max_recurrence()
@@ -1097,11 +1103,31 @@ class GroupRecursiveGPT2Block(nn.Module):
             recurrences = max(recurrences, 1)
         else:
             recurrences = self.max_recurrence
+        
+        if self.penalize_recurrence_embedding_similarity:
+            cosine_similarities = []
+            mse_similarities = []
+        
         self.current_recurrence = round(recurrences)
         for r in range(self.current_recurrence):
             if not full_grad and r < (self.current_recurrence - self.k_last_recurrence_gradient_backprop):
                 x = x.detach()
-            x = step(x, steps_done=torch.tensor(r, device=x.device))
+            x_before = x
+            x_after = step(x, steps_done=torch.tensor(r, device=x.device))
+            x = x_after
+
+            if self.penalize_recurrence_embedding_similarity:
+                # cosine similarity between x_before and x_after
+                cosine_similarity = (self.cos(x_before.view(x_before.size(0), -1), x_after.view(x_after.size(0), -1)) + 1.0 ) / 2.0 # shift to [0, 1]
+                cosine_similarities.append(cosine_similarity.mean())
+
+                # mse 
+                mse_similarity = nn.functional.mse_loss(x_before, x_after, reduction='mean')
+                mse_similarities.append(mse_similarity)
+
+        
+        if self.penalize_recurrence_embedding_similarity:
+            return x.to(type_), torch.stack(cosine_similarities).mean(), torch.stack(mse_similarities).mean()
 
         return x.to(type_)
 
@@ -1140,7 +1166,7 @@ class GPT2LLM(NNModel):
         seed: Optional[int] = None,
         enforce_swiglu_hidden_dim_multiple_of: int = 256,
         use_LNS: bool = False,
-        # osicallate_recurrence: bool = False,
+        penalize_recurrence_embedding_similarity: bool = False,
     ):
         """
         Initializes the GPT2LLM object.
@@ -1196,6 +1222,10 @@ class GPT2LLM(NNModel):
         self.recurrence_usage_stats = {}
         self.processed_layers_in_this_run = 0
         self.use_LNS = use_LNS
+        self.penalize_recurrence_embedding_similarity = penalize_recurrence_embedding_similarity
+        if penalize_recurrence_embedding_similarity:
+            self.recurrence_embedding_cosine_similarity_stats = {}
+            self.recurrence_embedding_mse_similarity_stats = {} 
 
 
         assert vocab_size is not None
@@ -1308,6 +1338,7 @@ class GPT2LLM(NNModel):
                     sample_iterations=sample_iterations,
                     n_embd=n_embd,
                     use_recurrence_embedding=use_recurrence_embedding,
+                    penalize_recurrence_embedding_similarity=penalize_recurrence_embedding_similarity,
                 )
             else:
                 raise ValueError(
@@ -1420,6 +1451,23 @@ class GPT2LLM(NNModel):
             del state_dict["lm_head.weight"]
         return super().load_state_dict(state_dict, strict=strict, assign=assign)
     
+    def record_recurrence_usage_stats(self, layer_idx, block):
+        if int(layer_idx) not in self.recurrence_usage_stats:
+            self.recurrence_usage_stats[int(layer_idx)] = []
+        self.recurrence_usage_stats[int(layer_idx)].append(block.current_recurrence)
+
+    def record_recurrence_embedding_similarity_stats(self, cosine_similarity, mse_similarity, layer_idx):
+        if int(layer_idx) not in self.recurrence_embedding_cosine_similarity_stats:
+            self.recurrence_embedding_cosine_similarity_stats[int(layer_idx)] = []
+        self.recurrence_embedding_cosine_similarity_stats[int(layer_idx)].append(cosine_similarity.item())
+
+        if int(layer_idx) not in self.recurrence_embedding_mse_similarity_stats:
+            self.recurrence_embedding_mse_similarity_stats[int(layer_idx)] = []
+        self.recurrence_embedding_mse_similarity_stats[int(layer_idx)].append(mse_similarity.item())
+
+    def get_recurrence_similarity_penalty(self) -> torch.Tensor:
+        pass
+    
     @overload
     def forward(self, inputs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """
@@ -1493,6 +1541,8 @@ class GPT2LLM(NNModel):
         # TODO: use drop out also without absolute position embedding?
         h = self.transformer.drop(h) if hasattr(self.transformer, "drop") else h
 
+        recurrence_cosine_similarities = []
+        recurrence_mse_similarities = []
         for layer_idx in self.transformer.h:
             if self.blocks_types[int(layer_idx)] == BlockTypes.GROUP_RECURSIVE:
                 block: GroupRecursiveGPT2Block = self.transformer.h[layer_idx]  # type: ignore
@@ -1501,18 +1551,38 @@ class GPT2LLM(NNModel):
                 if self.training:# and sampling_std is not None:
                     block.set_sampling_std(sampling_std)
 
-            h = self.transformer.h[layer_idx](h)
+                
+            if self.blocks_types[int(layer_idx)] == BlockTypes.GROUP_RECURSIVE and self.penalize_recurrence_embedding_similarity:
+                block: GroupRecursiveGPT2Block = self.transformer.h[layer_idx]  # type: ignore
+                h, cosine_similarity, mse_similarity = self.transformer.h[layer_idx](h)
+                recurrence_cosine_similarities.append(cosine_similarity)
+                recurrence_mse_similarities.append(mse_similarity)
+            else:
+                before_h = h
+                h = self.transformer.h[layer_idx](h)
+                cosine_similarity = nn.functional.cosine_similarity(
+                    before_h.view(before_h.size(0), -1), h.view(h.size(0), -1), dim=-1
+                ).mean()
+                mse_similarity = nn.functional.mse_loss(before_h, h, reduction='mean').mean()
 
             if self.blocks_types[int(layer_idx)] == BlockTypes.GROUP_RECURSIVE:
                 block: GroupRecursiveGPT2Block = self.transformer.h[layer_idx]  # type: ignore
-                # record recurrence usage stats
-                if int(layer_idx) not in self.recurrence_usage_stats:
-                    self.recurrence_usage_stats[int(layer_idx)] = []
-                self.recurrence_usage_stats[int(layer_idx)].append(block.current_recurrence)
+                self.record_recurrence_usage_stats(layer_idx, block)
+            
+            if self.penalize_recurrence_embedding_similarity:
+                self.record_recurrence_embedding_similarity_stats(cosine_similarity, mse_similarity, layer_idx)
 
         h = self.transformer.lm_head_norm(h) if hasattr(self.transformer, "lm_head_norm") else h
         h = self.transformer.lm_head(h) if hasattr(self.transformer, "lm_head") else h
         self.reset_processed_layers_cnt()
+        
+        if self.penalize_recurrence_embedding_similarity:
+            return {
+                "logits": h,
+                "recurrence_embedding_cosine_similarity": torch.stack(recurrence_cosine_similarities).mean() if recurrence_cosine_similarities else torch.tensor(0.0),
+                "recurrence_embedding_mse_similarity": torch.stack(recurrence_mse_similarities).mean() if recurrence_mse_similarities else torch.tensor(0.0),
+            }
+        
         return h
 
 

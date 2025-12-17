@@ -155,6 +155,11 @@ class Trainer:
             current_std = std_scheduler.std if std_scheduler is not None else None
             result_batch = model_predict_batch(model=model, batch=batch, sampling_std=current_std)
             loss = loss_fun(result_batch)
+            if isinstance(loss, tuple):
+                loss, ce_loss, aux_loss = loss
+            else:
+                ce_loss = None
+                aux_loss = None
             (loss / self.gradient_acc_steps).backward()
 
         if (micro_batch_id + 1) % self.gradient_acc_steps == 0:
@@ -174,7 +179,7 @@ class Trainer:
 
         self._track_recurrences_on_wandb(model, self.evaluation_result_publisher, num_train_steps_done, current_std)
 
-        return step_performed, num_train_steps_done, loss, gradient_norm_score
+        return step_performed, num_train_steps_done, loss, gradient_norm_score, ce_loss, aux_loss
 
     def train(
         self,
@@ -209,6 +214,8 @@ class Trainer:
         model.train()
 
         cumulated_losses = self._reset_tracked_losses()
+        cumulated_losses_ce = self._reset_tracked_losses()
+        cumulated_losses_aux = self._reset_tracked_losses()
 
         # throughput
         thoughput_aggregator = Aggregator[ThroughputAggregationKeys]()
@@ -244,6 +251,8 @@ class Trainer:
                 num_train_steps_done,
                 batch_loss,
                 gradient_norm_score,
+                ce_loss, 
+                aux_loss
             ) = self._train_batch(
                 batch=batch,
                 model=model,
@@ -264,6 +273,12 @@ class Trainer:
                 cumulated_losses[0] += batch_loss.item()
                 # This works, because we always drop the last batch in case it has less samples than the batch size
                 cumulated_losses[-1] += 1  # number of local batches
+
+                if ce_loss is not None and aux_loss is not None:
+                    cumulated_losses_ce[0] += ce_loss.item()
+                    cumulated_losses_aux[0] += aux_loss.item()
+                    cumulated_losses_ce[-1] += 1
+                    cumulated_losses_aux[-1] += 1
 
             # gradient norm is already synced across all ranks
             if gradient_norm_score is not None:
@@ -298,6 +313,8 @@ class Trainer:
                 # add the loss and gradient norm for the LAST batch
 
                 cumulated_losses[1] = batch_loss.item() if batch_loss is not None else 0.0
+                cumulated_losses_ce[1] = ce_loss.item() if ce_loss is not None else 0.0
+                cumulated_losses_aux[1] = aux_loss.item() if aux_loss is not None else 0.0
 
                 reduced_losses = Reducer.reduce(
                     tensor=cumulated_losses,
@@ -309,13 +326,31 @@ class Trainer:
                     ),
                 )
 
-                train_loss_avg, train_loss_last_batch = (
-                    reduced_losses[0],
-                    reduced_losses[1],
+                reduced_losses_ce = Reducer.reduce(
+                    tensor=cumulated_losses_ce,
+                    operation=dist.ReduceOp.SUM,
+                    # 1.) summed batch loss / (num batches * (world size / dp_degree))
+                    # 2.) last batch loss / (world size / pp_degree)
+                    post_processing_fun=lambda t: torch.stack(
+                        [t[0] / t[-1], t[1] / dist.get_world_size() * self.pp_degree]
+                    ),
+                )
+                reduced_losses_aux = Reducer.reduce(
+                    tensor=cumulated_losses_aux,
+                    operation=dist.ReduceOp.SUM,
+                    # 1.) summed batch loss / (num batches * (world size / dp_degree))
+                    # 2.) last batch loss / (world size / pp_degree)
+                    post_processing_fun=lambda t: torch.stack(
+                        [t[0] / t[-1], t[1] / dist.get_world_size() * self.pp_degree]
+                    ),
                 )
                 losses = {
-                    "train loss avg": ResultItem(train_loss_avg, decimal_places=2),
-                    "train loss last": ResultItem(train_loss_last_batch, decimal_places=2),
+                    "train loss avg": ResultItem(reduced_losses[0], decimal_places=2),
+                    "train loss last": ResultItem(reduced_losses[1], decimal_places=2),
+                    "train ce loss avg": ResultItem(reduced_losses_ce[0], decimal_places=2),
+                    "train ce loss last": ResultItem(reduced_losses_ce[1], decimal_places=2),
+                    "train aux loss avg": ResultItem(reduced_losses_aux[0], decimal_places=2),
+                    "train aux loss last": ResultItem(reduced_losses_aux[1], decimal_places=2),
                 }
 
                 consumed_tokens = torch.tensor(training_progress.num_seen_tokens_total)
@@ -362,6 +397,8 @@ class Trainer:
                 )
                 thoughput_aggregator.remove_keys()
 
+                cumulated_losses_ce = self._reset_tracked_losses()
+                cumulated_losses_aux = self._reset_tracked_losses()
                 cumulated_losses = self._reset_tracked_losses()
             if step_performed:
                 evaluation_callback(num_train_steps_done=training_progress.num_seen_steps_total)
@@ -404,6 +441,49 @@ class Trainer:
                         evaluation_result=metrics,
                     )
             model.recurrence_usage_stats = {}
+
+            if hasattr(model, "recurrence_embedding_cosine_similarity_stats"):
+                recurrence_embedding_cosine_similarity_stats = model.recurrence_embedding_cosine_similarity_stats
+                for layer_idx, similarities in recurrence_embedding_cosine_similarity_stats.items():
+                    avg_similarity = sum(similarities) / len(similarities)
+                    metrics = EvaluationResultBatch(
+                        losses={},
+                        metrics={
+                            f"recurrence_embedding_stats/avg_cosine_similarity_layer_{layer_idx}": ResultItem(
+                                torch.tensor(avg_similarity), decimal_places=4
+                            ),                            
+                        },
+                        throughput_metrics={},
+                        dataloader_tag="recurrence_embedding_stats",
+                        num_train_steps_done=num_train_steps_done,
+                    )
+                    self._publish_evaluation_result(
+                        evaluation_result_publisher=evaluation_result_publisher,
+                        evaluation_result=metrics,
+                    )
+                model.recurrence_embedding_cosine_similarity_stats = {}
+
+            if hasattr(model, "recurrence_embedding_mse_similarity_stats"):
+                recurrence_embedding_mse_similarity_stats = model.recurrence_embedding_mse_similarity_stats
+                for layer_idx, similarities in recurrence_embedding_mse_similarity_stats.items():
+                    avg_similarity = sum(similarities) / len(similarities)
+                    metrics = EvaluationResultBatch(
+                        losses={},
+                        metrics={
+                            f"recurrence_embedding_stats/avg_mse_similarity_layer_{layer_idx}": ResultItem(
+                                torch.tensor(avg_similarity), decimal_places=4
+                            ),                            
+                        },
+                        throughput_metrics={},
+                        dataloader_tag="recurrence_embedding_stats",
+                        num_train_steps_done=num_train_steps_done,
+                    )
+                    self._publish_evaluation_result(
+                        evaluation_result_publisher=evaluation_result_publisher,
+                        evaluation_result=metrics,
+                    )
+                model.recurrence_embedding_mse_similarity_stats = {}
+
         
 
     @staticmethod

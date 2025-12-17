@@ -73,6 +73,9 @@ class Evaluator:
             else:
                 result_batch = model_predict_batch(model=model, batch=batch)
                 loss = loss_fun(result_batch)
+
+                if isinstance(loss, tuple):
+                    loss, ce_loss, aux_loss = loss
         return loss
 
     def evaluate(
