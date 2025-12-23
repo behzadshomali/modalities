@@ -388,6 +388,7 @@ class GPT2LLMConfig(BaseModel):
     enforce_swiglu_hidden_dim_multiple_of: int = 256
     use_LNS: bool = False
     penalize_recurrence_embedding_similarity: bool = False
+    return_each_recurrence_output: bool = False
 
     @model_validator(mode="after")
     def check_divisibility(self) -> "GPT2LLMConfig":
@@ -1020,6 +1021,7 @@ class GroupRecursiveGPT2Block(nn.Module):
         sample_iterations: bool = False,
         use_recurrence_embedding: bool = False,
         penalize_recurrence_embedding_similarity: bool = False,
+        return_each_recurrence_output: bool = False,
     ):
         """
         Initializes the GroupRecursiveGPT2Block.
@@ -1051,6 +1053,8 @@ class GroupRecursiveGPT2Block(nn.Module):
         self.penalize_recurrence_embedding_similarity = penalize_recurrence_embedding_similarity
         if penalize_recurrence_embedding_similarity:
             self.cos = nn.CosineSimilarity(dim=-1)
+
+        self.return_each_recurrence_output = return_each_recurrence_output # should be used only when iterating over the entire model
         
 
         # self._check_max_recurrence()
@@ -1087,6 +1091,29 @@ class GroupRecursiveGPT2Block(nn.Module):
             
             return x
         
+        ## add non-linearities using convolution :
+        ## x shape: batch size, seq len, dim
+        # x_t = x.transpose(1, 2)  # (batch, dim=768, seq_len=2048)
+
+        # weight = torch.ones(
+        #     1, x_t.size(1), 1,   # in_channels = 768
+        #     device=x.device,
+        #     dtype=x.dtype
+        # )
+        # bias = torch.zeros(
+        #     1,
+        #     device=x.device,
+        #     dtype=x.dtype
+        # )
+
+        # x = torch.nn.functional.conv1d(
+        #     x_t,
+        #     weight=weight,
+        #     bias=bias,
+        #     stride=1,
+        #     padding=0
+        # ).transpose(1, 2)
+        
         # ensure output type is the same as input type
         type_ = x.dtype
 
@@ -1108,6 +1135,9 @@ class GroupRecursiveGPT2Block(nn.Module):
             cosine_similarities = []
             mse_similarities = []
         
+        if self.return_each_recurrence_output:
+            all_recurrence_outputs = []
+
         self.current_recurrence = round(recurrences)
         for r in range(self.current_recurrence):
             if not full_grad and r < (self.current_recurrence - self.k_last_recurrence_gradient_backprop):
@@ -1115,6 +1145,10 @@ class GroupRecursiveGPT2Block(nn.Module):
             x_before = x
             x_after = step(x, steps_done=torch.tensor(r, device=x.device))
             x = x_after
+
+            if self.return_each_recurrence_output:
+                all_recurrence_outputs.append(x)
+
 
             if self.penalize_recurrence_embedding_similarity:
                 # cosine similarity between x_before and x_after
@@ -1126,10 +1160,18 @@ class GroupRecursiveGPT2Block(nn.Module):
                 mse_similarities.append(mse_similarity)
 
         
+        output = {}
+        if self.return_each_recurrence_output:
+            output["recurrence_outputs"] = all_recurrence_outputs
+        
         if self.penalize_recurrence_embedding_similarity:
-            return x.to(type_), torch.stack(cosine_similarities).mean(), torch.stack(mse_similarities).mean()
+            output["cosine_similarity"] = torch.stack(cosine_similarities).mean()
+            output["mse_similarity"] = torch.stack(mse_similarities).mean()
+            
 
-        return x.to(type_)
+        output["output"] = x.to(type_)
+
+        return output
 
 
 class GPT2LLM(NNModel):
@@ -1167,6 +1209,7 @@ class GPT2LLM(NNModel):
         enforce_swiglu_hidden_dim_multiple_of: int = 256,
         use_LNS: bool = False,
         penalize_recurrence_embedding_similarity: bool = False,
+        return_each_recurrence_output: bool = False,
     ):
         """
         Initializes the GPT2LLM object.
@@ -1223,9 +1266,21 @@ class GPT2LLM(NNModel):
         self.processed_layers_in_this_run = 0
         self.use_LNS = use_LNS
         self.penalize_recurrence_embedding_similarity = penalize_recurrence_embedding_similarity
+        self.return_each_recurrence_output = return_each_recurrence_output
+        if return_each_recurrence_output:
+            if len(recurrent_blocks_indices) != 1 or len(recurrent_blocks_indices[0]) != n_layer:
+                raise ValueError(
+                    "When using 'return_each_recurrence_output', "
+                    "'recurrent_blocks_indices' must be a list of lists, "
+                    "meaning that, in this case only iterating over the entire model is supported."
+                )
+            self.recurrence_logits_entropy_stats = {}
+
         if penalize_recurrence_embedding_similarity:
             self.recurrence_embedding_cosine_similarity_stats = {}
             self.recurrence_embedding_mse_similarity_stats = {} 
+
+        self.vocab_size = vocab_size
 
 
         assert vocab_size is not None
@@ -1339,6 +1394,7 @@ class GPT2LLM(NNModel):
                     n_embd=n_embd,
                     use_recurrence_embedding=use_recurrence_embedding,
                     penalize_recurrence_embedding_similarity=penalize_recurrence_embedding_similarity,
+                    return_each_recurrence_output=return_each_recurrence_output,
                 )
             else:
                 raise ValueError(
@@ -1465,6 +1521,12 @@ class GPT2LLM(NNModel):
             self.recurrence_embedding_mse_similarity_stats[int(layer_idx)] = []
         self.recurrence_embedding_mse_similarity_stats[int(layer_idx)].append(mse_similarity.item())
 
+    def record_recurrence_logits_entropy_stats(self, iter_idx, entropy):
+        if int(iter_idx) not in self.recurrence_logits_entropy_stats:
+            self.recurrence_logits_entropy_stats[int(iter_idx)] = []
+        
+        self.recurrence_logits_entropy_stats[int(iter_idx)].append(entropy.item())
+
     def get_recurrence_similarity_penalty(self) -> torch.Tensor:
         pass
     
@@ -1552,11 +1614,17 @@ class GPT2LLM(NNModel):
                     block.set_sampling_std(sampling_std)
 
                 
-            if self.blocks_types[int(layer_idx)] == BlockTypes.GROUP_RECURSIVE and self.penalize_recurrence_embedding_similarity:
+            if self.blocks_types[int(layer_idx)] == BlockTypes.GROUP_RECURSIVE:
                 block: GroupRecursiveGPT2Block = self.transformer.h[layer_idx]  # type: ignore
-                h, cosine_similarity, mse_similarity = self.transformer.h[layer_idx](h)
-                recurrence_cosine_similarities.append(cosine_similarity)
-                recurrence_mse_similarities.append(mse_similarity)
+                output = self.transformer.h[layer_idx](h)
+                h = output["output"]
+                if self.penalize_recurrence_embedding_similarity:
+                    cosine_similarity = output["cosine_similarity"]
+                    mse_similarity = output["mse_similarity"]
+                    recurrence_cosine_similarities.append(cosine_similarity)
+                    recurrence_mse_similarities.append(mse_similarity)
+                if self.return_each_recurrence_output:
+                    each_recurrence_outputs = output["recurrence_outputs"]
             else:
                 before_h = h
                 h = self.transformer.h[layer_idx](h)
@@ -1567,24 +1635,57 @@ class GPT2LLM(NNModel):
 
             if self.blocks_types[int(layer_idx)] == BlockTypes.GROUP_RECURSIVE:
                 block: GroupRecursiveGPT2Block = self.transformer.h[layer_idx]  # type: ignore
-                self.record_recurrence_usage_stats(layer_idx, block)
+                if self.training:
+                    self.record_recurrence_usage_stats(layer_idx, block)
             
             if self.penalize_recurrence_embedding_similarity:
-                self.record_recurrence_embedding_similarity_stats(cosine_similarity, mse_similarity, layer_idx)
+                if self.training:
+                    self.record_recurrence_embedding_similarity_stats(cosine_similarity, mse_similarity, layer_idx)
 
         h = self.transformer.lm_head_norm(h) if hasattr(self.transformer, "lm_head_norm") else h
         h = self.transformer.lm_head(h) if hasattr(self.transformer, "lm_head") else h
         self.reset_processed_layers_cnt()
         
+        final_output = {}
+        final_output["logits"] = h
         if self.penalize_recurrence_embedding_similarity:
-            return {
-                "logits": h,
-                "recurrence_embedding_cosine_similarity": torch.stack(recurrence_cosine_similarities).mean() if recurrence_cosine_similarities else torch.tensor(0.0),
-                "recurrence_embedding_mse_similarity": torch.stack(recurrence_mse_similarities).mean() if recurrence_mse_similarities else torch.tensor(0.0),
-            }
-        
-        return h
+            final_output["recurrence_embedding_cosine_similarity"] = torch.stack(recurrence_cosine_similarities).mean() if recurrence_cosine_similarities else torch.tensor(0.0)
+            final_output["recurrence_embedding_mse_similarity"] = torch.stack(recurrence_mse_similarities).mean() if recurrence_mse_similarities else torch.tensor(0.0)
+        if self.return_each_recurrence_output:
+            final_output["each_recurrence_entropy"] = []
+            final_output["each_recurrence_logits"] = []
+            for r in range(self.max_recurrences[-1]-1): # already calculated the last iteration outputs
+                o = self.transformer.lm_head_norm(each_recurrence_outputs[r]) if hasattr(self.transformer, "lm_head_norm") else each_recurrence_outputs[r]
+                o = self.transformer.lm_head(o) if hasattr(self.transformer, "lm_head") else o
+                final_output["each_recurrence_logits"].append(o)
+                
+                entropy = get_logits_entropy(o)
+                final_output["each_recurrence_entropy"].append(entropy)
+                
+                if self.training:
+                    self.record_recurrence_logits_entropy_stats(r, entropy)
+            
+            final_output["each_recurrence_logits"].append(h) # add the final output as well
+            final_output["each_recurrence_logits"] = torch.stack(final_output["each_recurrence_logits"])
+            
+            entropy = get_logits_entropy(h)
+            final_output["each_recurrence_entropy"].append(entropy) # add the final output as well
+            final_output["each_recurrence_entropy"] = torch.stack(final_output["each_recurrence_entropy"])
+            if self.training:
+                self.record_recurrence_logits_entropy_stats(self.max_recurrences[-1]-1, entropy)
 
+        return final_output if len(final_output) > 1 else h
+
+def get_logits_entropy(logits: torch.Tensor):
+    """
+    Compute Shannon entropy of the logits.
+    """
+    probs = torch.softmax(logits, dim=-1)
+    log_probs = torch.log(probs + 1e-10)  # add small value to avoid log(0)
+    entropy = -torch.sum(probs * log_probs, dim=-1)
+    normalized_entropy = entropy / torch.log(torch.tensor(logits.size(-1), dtype=logits.dtype, device=logits.device))
+    normalized_entropy = normalized_entropy.mean()  # mean over batch and sequence length
+    return normalized_entropy
 
 def manual_scaled_dot_product_attention(
     query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None

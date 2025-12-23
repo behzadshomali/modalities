@@ -585,6 +585,7 @@ class GPT2ModelFactory:
         enforce_swiglu_hidden_dim_multiple_of: int = 256,
         use_LNS: bool = False,
         penalize_recurrence_embedding_similarity: bool = False,
+        return_each_recurrence_output: bool = False,
     ) -> GPT2LLM:
         config = dict(
             sample_key=sample_key,
@@ -614,7 +615,8 @@ class GPT2ModelFactory:
             use_recurrence_embedding=use_recurrence_embedding,
             enforce_swiglu_hidden_dim_multiple_of=enforce_swiglu_hidden_dim_multiple_of,
             use_LNS=use_LNS,
-            penalize_recurrence_embedding_similarity=penalize_recurrence_embedding_similarity
+            penalize_recurrence_embedding_similarity=penalize_recurrence_embedding_similarity,
+            return_each_recurrence_output=return_each_recurrence_output,
         )
         if use_meta_device and use_weight_tying:
             raise ValueError(
