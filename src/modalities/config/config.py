@@ -82,10 +82,10 @@ class CLMCrossEntropyLossConfig(BaseModel):
     prediction_key: str
 
 
-class CLMRecurrenceCosineSimPenaltyLossConfig(CLMCrossEntropyLossConfig):
+class CLMCrossEntropyWithPenaltyLossConfig(CLMCrossEntropyLossConfig):
     target_key: str
     prediction_key: str
-    penalty_weight: float
+    penalty_alpha: float
 
 
 # Checkpointing

@@ -26,7 +26,7 @@ from modalities.config.config import (
     BatchSamplerConfig,
     CheckpointSavingConfig,
     CLMCrossEntropyLossConfig,
-    CLMRecurrenceCosineSimPenaltyLossConfig,
+    CLMCrossEntropyWithPenaltyLossConfig,
     CombinedDatasetConfig,
     CompiledModelConfig,
     ConstantLRSchedulerConfig,
@@ -86,7 +86,7 @@ from modalities.logging_broker.subscriber_impl.subscriber_factory import (
     ProgressSubscriberFactory,
     ResultsSubscriberFactory,
 )
-from modalities.loss_functions import CLMCrossEntropyLoss, CLMRecurrenceCosineSimPenaltyLoss
+from modalities.loss_functions import CLMCrossEntropyLoss, CLMRecurrenceCosineSimPenaltyLoss, CLMRecurrenceEntropyPenaltyLoss, CLMRecurrenceWeightedLoss
 from modalities.models.coca.coca_model import CoCa, CoCaConfig
 from modalities.models.coca.collator import CoCaCollateFnConfig, CoCaCollatorFn
 from modalities.models.components.layer_norms import (
@@ -222,7 +222,19 @@ COMPONENTS = [
         "loss",
         "clm_recurrence_cosine_sim_penalty_loss",
         CLMRecurrenceCosineSimPenaltyLoss,
-        CLMRecurrenceCosineSimPenaltyLossConfig,
+        CLMCrossEntropyWithPenaltyLossConfig,
+    ),
+    ComponentEntity(
+        "loss",
+        "clm_recurrence_entropy_penalty_loss",
+        CLMRecurrenceEntropyPenaltyLoss,
+        CLMCrossEntropyWithPenaltyLossConfig,
+    ),
+    ComponentEntity(
+        "loss",
+        "clm_recurrence_weighted_loss",
+        CLMRecurrenceWeightedLoss,
+        CLMCrossEntropyWithPenaltyLossConfig,
     ),
     # optmizers
     ComponentEntity("optimizer", "adam", OptimizerFactory.get_adam, AdamOptimizerConfig),

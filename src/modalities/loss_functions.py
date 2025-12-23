@@ -92,18 +92,18 @@ class CLMRecurrenceCosineSimPenaltyLoss(CLMCrossEntropyLoss):
         self, 
         target_key: str, 
         prediction_key: str, 
-        penalty_weight: float = 1.0, 
+        penalty_alpha: float = 1.0, 
         tag: str = "CLMRecurrenceCosineSimPenaltyLoss"
     ):
         """
         Args:
             target_key: Key to retrieve targets from the batch.
             prediction_key: Key to retrieve predictions from the batch.
-            penalty_weight: Coefficient (lambda) for the recurrence penalty term.
+            penalty_alpha: Coefficient (lambda) for the recurrence penalty term.
             tag: Name of the loss module.
         """
         super().__init__(target_key, prediction_key, tag)
-        self.penalty_weight = penalty_weight
+        self.penalty_alpha = penalty_alpha
 
     def __call__(self, *args, **kwargs) -> torch.Tensor:
         # 1. Parse arguments using the parent class logic to get raw inputs
@@ -152,10 +152,131 @@ class CLMRecurrenceCosineSimPenaltyLoss(CLMCrossEntropyLoss):
 
         # (1,1), (0,1), (0.5,0) --> y = 4x^2 - 4x + 1
         penalty = 4 * (recurrence_embedding_cosine_similarity ** 2) - 4 * recurrence_embedding_cosine_similarity + 1
-        total_loss = ce_loss + (self.penalty_weight * penalty)
+        total_loss = ce_loss + (self.penalty_alpha * penalty)
 
-        return total_loss, ce_loss, self.penalty_weight * penalty
+        return total_loss, ce_loss, self.penalty_alpha * penalty
+    
 
+class CLMRecurrenceEntropyPenaltyLoss(CLMCrossEntropyLoss):
+    def __init__(
+        self, 
+        target_key: str, 
+        prediction_key: str, 
+        penalty_alpha: float = 1.0, 
+        tag: str = "CLMRecurrenceEntropyPenaltyLoss"
+    ):
+        """
+        Args:
+            target_key: Key to retrieve targets from the batch.
+            prediction_key: Key to retrieve predictions from the batch.
+            penalty_alpha: Coefficient (lambda) for the recurrence penalty term.
+            tag: Name of the loss module.
+        """
+        super().__init__(target_key, prediction_key, tag)
+        self.penalty_alpha = penalty_alpha
+
+    def __call__(self, *args, **kwargs) -> torch.Tensor:
+        # 1. Parse arguments using the parent class logic to get raw inputs
+        labels, raw_outputs = self._parse_arguments(args, kwargs)
+
+        
+        
+        if isinstance(raw_outputs, dict):
+            # Extract logits (h)
+            lm_logits = raw_outputs.get("logits")
+            
+            # Extract the each_recurrence_entropy if it exists
+            if "each_recurrence_entropy" in raw_outputs:
+                each_recurrence_entropy = raw_outputs["each_recurrence_entropy"]
+                
+                # Ensure penalty is on the correct device
+                if each_recurrence_entropy.device != lm_logits.device:
+                    each_recurrence_entropy = each_recurrence_entropy.to(lm_logits.device)
+
+        else:
+            raise ValueError("Expected raw_outputs to be a dictionary containing at least 'logits' and 'each_recurrence_entropy'.")
+
+        # 3. Standard Cross Entropy Calculation
+        # Move labels to correct device
+        labels = labels.to(lm_logits.device)
+        shift_logits = lm_logits.contiguous()
+        shift_labels = labels.contiguous().long()
+
+        # Flatten tokens for CE Loss
+        ce_loss = self.loss_fun(
+            shift_logits.view(-1, shift_logits.size(-1)), 
+            shift_labels.view(-1)
+        )
+
+        entropy_weights = torch.tensor([i for i in range(0, len(each_recurrence_entropy)+1-1)], device=lm_logits.device, dtype=each_recurrence_entropy.dtype) # TODO: maybe start from 0 so we don't care about the first iteration entropy as it always exists
+        normalized_entropy_weights = entropy_weights / entropy_weights.sum()
+        penalty = sum(e * w for e, w in zip(each_recurrence_entropy, normalized_entropy_weights))
+
+        total_loss = ce_loss + (self.penalty_alpha * penalty)
+        return total_loss, ce_loss, self.penalty_alpha * penalty
+
+
+class CLMRecurrenceWeightedLoss(CLMCrossEntropyLoss):
+    def __init__(
+        self, 
+        target_key: str, 
+        prediction_key: str, 
+        penalty_alpha: float = 1.0, 
+        tag: str = "CLMRecurrenceWeightedLoss"
+    ):
+        """
+        Args:
+            target_key: Key to retrieve targets from the batch.
+            prediction_key: Key to retrieve predictions from the batch.
+            penalty_alpha: Coefficient (lambda) for the recurrence penalty term.
+            tag: Name of the loss module.
+        """
+        super().__init__(target_key, prediction_key, tag)
+        self.penalty_alpha = penalty_alpha
+
+    def __call__(self, *args, **kwargs) -> torch.Tensor:
+        # 1. Parse arguments using the parent class logic to get raw inputs
+        labels, raw_outputs = self._parse_arguments(args, kwargs)
+
+        
+        
+        if isinstance(raw_outputs, dict):
+            # Extract logits (h)
+            # lm_logits = raw_outputs.get("logits")
+            
+            # Extract the each_recurrence_logits if it exists
+            # if "each_recurrence_logits" in raw_outputs:
+            each_recurrence_logits = raw_outputs["each_recurrence_logits"]
+            device = each_recurrence_logits[0].device
+            
+            # Ensure penalty is on the correct device
+            # if each_recurrence_logits.device != lm_logits.device:
+            #     each_recurrence_logits = each_recurrence_logits.to(lm_logits.device)
+        else:
+            raise ValueError("Expected raw_outputs to be a dictionary containing 'each_recurrence_logits'.")
+
+        # 3. Standard Cross Entropy Calculation
+        # Move labels to correct device
+        labels = labels.to(device)
+        shift_labels = labels.contiguous().long()
+
+        ce_loss_list = []
+        for r in range(len(each_recurrence_logits)):
+            lm_logits = each_recurrence_logits[r]
+            shift_logits = lm_logits.contiguous()
+
+            # Flatten tokens for CE Loss
+            ce_loss = self.loss_fun(
+                shift_logits.view(-1, shift_logits.size(-1)), 
+                shift_labels.view(-1)
+            )
+            ce_loss_list.append(ce_loss)
+
+        loss_weights = torch.tensor([i for i in range(1, len(ce_loss_list)+1)], device=device, dtype=each_recurrence_logits[0].dtype)
+        normalized_loss_weights = loss_weights / loss_weights.sum()
+
+        total_loss = sum(l * w for l, w in zip(ce_loss_list, normalized_loss_weights))
+        return total_loss, ce_loss_list[-1], torch.tensor(0.0)  # return the last ce_loss as representative
 
 def nce_loss(
     embedding1: torch.Tensor, embedding2: torch.Tensor, device: torch.device, is_asymmetric: bool, temperature: float
