@@ -287,6 +287,11 @@ model_raw:
             n_head: ${model_raw.config.n_head_q} #it has to be head_q here
             seq_length_dim: -2
             base_freq: 10000
+      qk_norm_config:
+        norm_type: pytorch_rms_norm
+        config:
+          normalized_shape: 48 # n_embd / n_head
+          eps: 1.0e-05
     attention_implementation: pytorch_flash
     activation_type: swiglu
     attention_norm_config:
@@ -329,7 +334,7 @@ lr_scheduler:
 
 std_scheduler:
   component_key: scheduler
-  variant_key: cosine_std
+  variant_key: linear_std
   config: 
     start_factor: 1
     end_factor: 0

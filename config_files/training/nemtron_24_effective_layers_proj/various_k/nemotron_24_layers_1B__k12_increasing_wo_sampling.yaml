@@ -287,6 +287,11 @@ model_raw:
             n_head: ${model_raw.config.n_head_q} #it has to be head_q here
             seq_length_dim: -2
             base_freq: 10000
+      qk_norm_config:
+        norm_type: pytorch_rms_norm
+        config:
+          normalized_shape: 48 # n_embd / n_head
+          eps: 1.0e-05
     attention_implementation: pytorch_flash
     activation_type: swiglu
     attention_norm_config:
@@ -308,7 +313,7 @@ model_raw:
     recurrent_blocks_indices: [[2,3],[5,6],[8,9]]
     k_last_recurrence_gradient_backprops: -1 # -1 means the gradients for all steps will be propagated
     recurrent_blocks_max_recurrences: [2,4,6]
-    sample_iterations: true
+    sample_iterations: false
     use_recurrence_embedding: true
 
 lr_scheduler:

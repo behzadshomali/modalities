@@ -78,8 +78,6 @@ train_dataset:
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
-    
-     
 
 train_dataloader:
   component_key: data_loader
@@ -170,7 +168,7 @@ checkpoint_saving:
       component_key: checkpoint_saving_strategy
       variant_key: save_k_most_recent_checkpoints_strategy
       config:
-        k: 2
+        k: -1
     checkpoint_saving_execution:
       component_key: checkpoint_saving_execution
       variant_key: dcp
@@ -181,10 +179,12 @@ checkpoint_saving:
 
 loss_fn:
   component_key: loss
-  variant_key: clm_cross_entropy_loss
+  variant_key: clm_recurrence_entropy_penalty_loss
   config:
     target_key: ${settings.referencing_keys.target_key}
     prediction_key: ${settings.referencing_keys.prediction_key}
+    penalty_alpha: 1.0
+
 
 device_mesh:
   component_key: device_mesh
@@ -287,6 +287,11 @@ model_raw:
             n_head: ${model_raw.config.n_head_q} #it has to be head_q here
             seq_length_dim: -2
             base_freq: 10000
+      qk_norm_config:
+        norm_type: pytorch_rms_norm
+        config:
+          normalized_shape: 48 # n_embd / n_head
+          eps: 1.0e-05
     attention_implementation: pytorch_flash
     activation_type: swiglu
     attention_norm_config:
@@ -305,6 +310,14 @@ model_raw:
         normalized_shape: ${model_raw.config.n_embd}
         eps: 1.0e-05
     use_weight_tying: false
+    recurrent_blocks_indices: [[0,1,2,3,4,5,6,7,8,9,10,11]]
+    k_last_recurrence_gradient_backprops: -1 # -1 means the gradients for all steps will be propagated
+    recurrent_blocks_max_recurrences: 4
+    sample_iterations: false
+    use_recurrence_embedding: true
+    use_LNS: true
+    penalize_recurrence_embedding_similarity: true
+    return_each_recurrence_output: true
 
 lr_scheduler:
   component_key: scheduler
@@ -390,7 +403,7 @@ evaluation_subscriber:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_24_effective_layers_1B_std_scheduler
     mode: ONLINE
-    experiment_id: BASELINE_k=${model_raw.config.n_layer}_${settings.experiment_id}
+    experiment_id: Conv_EntropyLoss${loss_fn.config.penalty_alpha}_LR${optimizer.config.lr}_useLNS_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_sample=${model_raw.config.sample_iterations}_recurEmbed=${model_raw.config.use_recurrence_embedding}_lastBackProp=${model_raw.config.k_last_recurrence_gradient_backprops}_${settings.experiment_id}
     directory: /raid/s3/opengptx/behzad_shomali/wandb_storage
     config_file_path: ${settings.config_file_path}
 

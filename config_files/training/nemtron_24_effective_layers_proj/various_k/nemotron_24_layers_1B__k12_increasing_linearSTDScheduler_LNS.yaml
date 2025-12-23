@@ -287,6 +287,11 @@ model_raw:
             n_head: ${model_raw.config.n_head_q} #it has to be head_q here
             seq_length_dim: -2
             base_freq: 10000
+      qk_norm_config:
+        norm_type: pytorch_rms_norm
+        config:
+          normalized_shape: 48 # n_embd / n_head
+          eps: 1.0e-05
     attention_implementation: pytorch_flash
     activation_type: swiglu
     attention_norm_config:
@@ -310,6 +315,7 @@ model_raw:
     recurrent_blocks_max_recurrences: [2,4,6]
     sample_iterations: true
     use_recurrence_embedding: true
+    use_LNS: true
 
 lr_scheduler:
   component_key: scheduler
@@ -329,7 +335,7 @@ lr_scheduler:
 
 std_scheduler:
   component_key: scheduler
-  variant_key: cosine_std
+  variant_key: linear_std
   config: 
     start_factor: 1
     end_factor: 0
@@ -395,7 +401,7 @@ evaluation_subscriber:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_24_effective_layers_1B_std_scheduler
     mode: ONLINE
-    experiment_id: k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_sample=${model_raw.config.sample_iterations}_recurEmbed=${model_raw.config.use_recurrence_embedding}_lastBackProp=${model_raw.config.k_last_recurrence_gradient_backprops}_${settings.experiment_id}
+    experiment_id: LinearSTDScheduler_LNS_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_sample=${model_raw.config.sample_iterations}_recurEmbed=${model_raw.config.use_recurrence_embedding}_lastBackProp=${model_raw.config.k_last_recurrence_gradient_backprops}_${settings.experiment_id}
     directory: /raid/s3/opengptx/behzad_shomali/wandb_storage
     config_file_path: ${settings.config_file_path}
 
