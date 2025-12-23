@@ -484,6 +484,27 @@ class Trainer:
                     )
                 model.recurrence_embedding_mse_similarity_stats = {}
 
+            if hasattr(model, "recurrence_logits_entropy_stats"):
+                recurrence_logits_entropy_stats = model.recurrence_logits_entropy_stats
+                for iter_idx, entropies in recurrence_logits_entropy_stats.items():
+                    avg_entropy = sum(entropies) / len(entropies)
+                    metrics = EvaluationResultBatch(
+                        losses={},
+                        metrics={
+                            f"recurrence_entropy_stats/avg_logits_entropy_iter_{iter_idx}": ResultItem(
+                                torch.tensor(avg_entropy), decimal_places=4
+                            ),                            
+                        },
+                        throughput_metrics={},
+                        dataloader_tag="recurrence_entropy_stats",
+                        num_train_steps_done=num_train_steps_done,
+                    )
+                    self._publish_evaluation_result(
+                        evaluation_result_publisher=evaluation_result_publisher,
+                        evaluation_result=metrics,
+                    )
+                model.recurrence_logits_entropy_stats = {}
+
         
 
     @staticmethod
