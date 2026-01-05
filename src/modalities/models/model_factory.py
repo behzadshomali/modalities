@@ -580,12 +580,14 @@ class GPT2ModelFactory:
         recurrent_blocks_max_recurrences: Optional[Union[int, list[int]]] = None,
         sample_iterations: Optional[bool] = False,
         use_recurrence_embedding: Optional[bool] = False,
+        recurrence_embedding_base_freq: Optional[float] = 10000.0,
         use_meta_device: Optional[bool] = False,
         seed: Optional[int] = None,
         enforce_swiglu_hidden_dim_multiple_of: int = 256,
         use_LNS: bool = False,
         penalize_recurrence_embedding_similarity: bool = False,
         return_each_recurrence_output: bool = False,
+        separate_lm_head_norm: bool = False,
     ) -> GPT2LLM:
         config = dict(
             sample_key=sample_key,
@@ -613,10 +615,12 @@ class GPT2ModelFactory:
             recurrent_blocks_max_recurrences=recurrent_blocks_max_recurrences,
             sample_iterations=sample_iterations,
             use_recurrence_embedding=use_recurrence_embedding,
+            recurrence_embedding_base_freq=recurrence_embedding_base_freq,
             enforce_swiglu_hidden_dim_multiple_of=enforce_swiglu_hidden_dim_multiple_of,
             use_LNS=use_LNS,
             penalize_recurrence_embedding_similarity=penalize_recurrence_embedding_similarity,
             return_each_recurrence_output=return_each_recurrence_output,
+            separate_lm_head_norm=separate_lm_head_norm,
         )
         if use_meta_device and use_weight_tying:
             raise ValueError(

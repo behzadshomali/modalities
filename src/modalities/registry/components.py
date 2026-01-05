@@ -27,6 +27,7 @@ from modalities.config.config import (
     CheckpointSavingConfig,
     CLMCrossEntropyLossConfig,
     CLMCrossEntropyWithPenaltyLossConfig,
+    CLMMTPCrossEntropyLossConfig,
     CombinedDatasetConfig,
     CompiledModelConfig,
     ConstantLRSchedulerConfig,
@@ -86,7 +87,13 @@ from modalities.logging_broker.subscriber_impl.subscriber_factory import (
     ProgressSubscriberFactory,
     ResultsSubscriberFactory,
 )
-from modalities.loss_functions import CLMCrossEntropyLoss, CLMRecurrenceCosineSimPenaltyLoss, CLMRecurrenceEntropyPenaltyLoss, CLMRecurrenceWeightedLoss
+from modalities.loss_functions import (
+    CLMCrossEntropyLoss, 
+    CLMRecurrenceCosineSimPenaltyLoss, 
+    CLMRecurrenceEntropyPenaltyLoss, 
+    CLMRecurrenceWeightedLoss,
+    MTPCrossEntropyLoss
+)
 from modalities.models.coca.coca_model import CoCa, CoCaConfig
 from modalities.models.coca.collator import CoCaCollateFnConfig, CoCaCollatorFn
 from modalities.models.components.layer_norms import (
@@ -236,11 +243,17 @@ COMPONENTS = [
         CLMRecurrenceWeightedLoss,
         CLMCrossEntropyWithPenaltyLossConfig,
     ),
+    ComponentEntity(
+        "loss",
+        "clm_mtp_recurrence_loss",
+        MTPCrossEntropyLoss,
+        CLMMTPCrossEntropyLossConfig,
+    ),
     # optmizers
     ComponentEntity("optimizer", "adam", OptimizerFactory.get_adam, AdamOptimizerConfig),
     ComponentEntity("optimizer", "adam_w", OptimizerFactory.get_adam_w, AdamWOptimizerConfig),
     ComponentEntity("optimizer", "adafactor", OptimizerFactory.get_adafactor, AdafactorOptimizerConfig),
-    ComponentEntity("optimizer", "muon", OptimizerFactory.get_muon, MuonOptimizerConfig), # TODO: double check if it's integrated correctly; doesn't seem like that doesn't make any differenece
+    ComponentEntity("optimizer", "muon", OptimizerFactory.get_muon, MuonOptimizerConfig),
     ComponentEntity(
         "optimizer",
         "fsdp1_checkpointed",

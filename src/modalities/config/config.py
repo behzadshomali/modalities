@@ -87,6 +87,11 @@ class CLMCrossEntropyWithPenaltyLossConfig(CLMCrossEntropyLossConfig):
     prediction_key: str
     penalty_alpha: float
 
+class CLMMTPCrossEntropyLossConfig(CLMCrossEntropyLossConfig):
+    target_key: str
+    prediction_key: str
+    mtp_prediction_key: str = "mtp_logits"
+    mtp_lambda: float
 
 # Checkpointing
 class SaveEveryKStepsCheckpointingStrategyConfig(BaseModel):
