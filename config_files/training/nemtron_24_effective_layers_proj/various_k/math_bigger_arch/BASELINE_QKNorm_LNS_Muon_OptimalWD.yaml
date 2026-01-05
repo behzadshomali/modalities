@@ -23,25 +23,25 @@ settings:
     enforce_last_step_evaluated: false
     enforce_last_step_checkpointed: false
   step_profile:
-    gradient_accumulation_steps: 40
-    local_train_micro_batch_size: 2
-    sequence_length: 2048
+    gradient_accumulation_steps: 78
+    local_train_micro_batch_size: 3
+    sequence_length: 1024
     dp_degree:
       instance_key: dp_degree
       pass_type: BY_REFERENCE
   training_target: 
-    num_target_tokens: #13920178176 # global_num_tokens // sequence_length // num_ranks // local_micro_batch_size // gradient_accumulation_steps
-      component_key: number_conversion
-      variant_key: num_tokens_from_packed_mem_map_dataset_continuous
-      config:
-        dataset_path: ${settings.paths.train_dataset_path}
-        sequence_length: ${settings.step_profile.sequence_length}
-        dp_degree:
-          instance_key: dp_degree
-          pass_type: BY_REFERENCE
-        local_micro_batch_size: ${settings.step_profile.local_train_micro_batch_size}
-        gradient_accumulation_steps: ${settings.step_profile.gradient_accumulation_steps}
-        sample_key: ${settings.referencing_keys.sample_key}
+    num_target_tokens: 6872666112 #13920178176 # global_num_tokens // sequence_length // num_ranks // local_micro_batch_size // gradient_accumulation_steps
+      # component_key: number_conversion
+      # variant_key: num_tokens_from_packed_mem_map_dataset_continuous
+      # config:
+      #   dataset_path: ${settings.paths.train_dataset_path}
+      #   sequence_length: ${settings.step_profile.sequence_length}
+      #   dp_degree:
+      #     instance_key: dp_degree
+      #     pass_type: BY_REFERENCE
+      #   local_micro_batch_size: ${settings.step_profile.local_train_micro_batch_size}
+      #   gradient_accumulation_steps: ${settings.step_profile.gradient_accumulation_steps}
+      #   sample_key: ${settings.referencing_keys.sample_key}
     num_target_steps:
       component_key: number_conversion
       variant_key: num_steps_from_num_tokens
@@ -71,13 +71,75 @@ train_dataset:
   variant_key: combined
   config:
     datasets:
+    # - component_key: dataset
+    #   variant_key: packed_mem_map_dataset_continuous
+    #   config:
+    #     raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_24_eval.pbin
+    #     sequence_length: ${settings.step_profile.sequence_length}
+    #     sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_24_eval.pbin
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part9.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part10.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part11.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part12.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part13.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part14.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part15.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part16.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part17.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part18_eval.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
+    
+     
 
 train_dataloader:
   component_key: data_loader
@@ -117,10 +179,16 @@ test_dataset:
   variant_key: combined
   config:
     datasets:
+    # - component_key: dataset
+    #   variant_key: packed_mem_map_dataset_continuous
+    #   config:
+    #     raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_23_part_00_SMALL_EVAL.pbin
+    #     sequence_length: ${settings.step_profile.sequence_length}
+    #     sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_23_part_00_SMALL_EVAL.pbin
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part19_eval.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
@@ -138,7 +206,7 @@ test_dataloader:
       component_key: batch_sampler
       variant_key: default
       config:
-        batch_size: 24
+        batch_size: 32
         drop_last: true
         sampler:
           component_key: sampler
@@ -177,14 +245,20 @@ checkpoint_saving:
         global_rank: ${settings.cuda_env.global_rank}
         experiment_id: ${settings.experiment_id}
 
+# loss_fn:
+#   component_key: loss
+#   variant_key: clm_cross_entropy_loss
+#   config:
+#     target_key: ${settings.referencing_keys.target_key}
+#     prediction_key: ${settings.referencing_keys.prediction_key}
+
 loss_fn:
   component_key: loss
-  variant_key: clm_recurrence_entropy_penalty_loss
+  variant_key: clm_recurrence_cosine_sim_penalty_loss
   config:
     target_key: ${settings.referencing_keys.target_key}
     prediction_key: ${settings.referencing_keys.prediction_key}
-    penalty_alpha: 1
-
+    penalty_alpha: 0.0
 
 device_mesh:
   component_key: device_mesh
@@ -273,10 +347,10 @@ model_raw:
     prediction_key: ${loss_fn.config.prediction_key}
     vocab_size: 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     n_layer: 12
-    n_head_q: 16
-    n_head_kv: 16
-    ffn_hidden: 3072
-    n_embd: 768
+    n_head_q: 32
+    n_head_kv: 32
+    ffn_hidden: 4096
+    n_embd: 1024
     dropout: 0.0
     bias: false
     attention_config:
@@ -290,7 +364,7 @@ model_raw:
       qk_norm_config:
         norm_type: pytorch_rms_norm
         config:
-          normalized_shape: 48 # n_embd / n_head
+          normalized_shape: 32 # n_embd / n_head
           eps: 1.0e-05
     attention_implementation: pytorch_flash
     activation_type: swiglu
@@ -310,14 +384,8 @@ model_raw:
         normalized_shape: ${model_raw.config.n_embd}
         eps: 1.0e-05
     use_weight_tying: false
-    recurrent_blocks_indices: [[0,1,2,3,4,5,6,7,8,9,10,11]]
-    k_last_recurrence_gradient_backprops: -1 # -1 means the gradients for all steps will be propagated
-    recurrent_blocks_max_recurrences: 4
-    sample_iterations: false
-    use_recurrence_embedding: true
     use_LNS: true
     penalize_recurrence_embedding_similarity: true
-    return_each_recurrence_output: true
 
 lr_scheduler:
   component_key: scheduler
@@ -326,7 +394,7 @@ lr_scheduler:
     optimizer:
       instance_key: optimizer
       pass_type: BY_REFERENCE
-    max_lr: 0.002121 #0.002953
+    max_lr: 0.001889 #0.002953
     cycle_momentum: false
     div_factor: 10
     final_div_factor: 1
@@ -375,11 +443,11 @@ optimizer:
   component_key: optimizer
   variant_key: muon
   config:
-    lr: 0.002121 #0.002953
+    lr: 0.001889 #0.002953
     adamw_betas: [0.9, 0.95]
     adamw_eps: 1e-8
-    weight_decay: 1e-1
-    weight_decay_groups_excluded: []
+    weight_decay: 0.0132 #1/(28682*0,002624)
+    weight_decay_groups_excluded: [embedding, layernorm, pytorch_rms_norm]
     wrapped_model:
       instance_key: initialized_model
       pass_type: BY_REFERENCE
@@ -414,9 +482,9 @@ evaluation_subscriber:
   variant_key: wandb
   config:
     global_rank: ${settings.cuda_env.global_rank}
-    project: nemotron_24_effective_layers_1B_std_scheduler
+    project: nemotron_24_effective_layers_1B_MATH
     mode: ONLINE
-    experiment_id: Muon_EntropyLoss${loss_fn.config.penalty_alpha}_LR${optimizer.config.lr}_useLNS_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_sample=${model_raw.config.sample_iterations}_recurEmbed=${model_raw.config.use_recurrence_embedding}_lastBackProp=${model_raw.config.k_last_recurrence_gradient_backprops}_${settings.experiment_id}
+    experiment_id: 438M_OptimalWD_BASELINE_k=${model_raw.config.n_layer}_${settings.experiment_id}
     directory: /raid/s3/opengptx/behzad_shomali/wandb_storage
     config_file_path: ${settings.config_file_path}
 
