@@ -245,13 +245,13 @@ checkpoint_saving:
 
 loss_fn:
   component_key: loss
-  variant_key: clm_mtp_recurrence_loss
+  variant_key: clm_mtp_recurrence_loss_temporal_discounting
   config:
     target_key: ${settings.referencing_keys.target_key}
     prediction_key: ${settings.referencing_keys.prediction_key}
     mtp_prediction_key: each_recurrence_logits
-    mtp_lambda: 1 # the aux loss is divided (recur_num-1)
-
+    mtp_lambda: 1
+    discount_factor: 0.4
 
 device_mesh:
   component_key: device_mesh
@@ -387,6 +387,7 @@ model_raw:
     penalize_recurrence_embedding_similarity: true
     return_each_recurrence_output: true
     separate_lm_head_norm: true
+    use_last_iteration_output_as_final: false
 
 lr_scheduler:
   component_key: scheduler
@@ -485,7 +486,7 @@ evaluation_subscriber:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_24_effective_layers_1B_MATH
     mode: ONLINE
-    experiment_id: MTP_Muon_ShortSeq${settings.step_profile.sequence_length}_OptimalWD_LR${optimizer.config.lr}_useLNS_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_sample=${model_raw.config.sample_iterations}_recurEmbed=${model_raw.config.use_recurrence_embedding}_lastBackProp=${model_raw.config.k_last_recurrence_gradient_backprops}_${settings.experiment_id}
+    experiment_id: MTPTD${loss_fn.config.discount_factor}_Muon_ShortSeq${settings.step_profile.sequence_length}_OptimalWD_LR${optimizer.config.lr}_useLNS_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_sample=${model_raw.config.sample_iterations}_recurEmbed=${model_raw.config.use_recurrence_embedding}_lastBackProp=${model_raw.config.k_last_recurrence_gradient_backprops}_${settings.experiment_id}
     directory: /raid/s3/opengptx/behzad_shomali/wandb_storage
     config_file_path: ${settings.config_file_path}
 
