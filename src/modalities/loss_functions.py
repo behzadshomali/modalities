@@ -397,6 +397,140 @@ class MTPCrossEntropyLoss(Loss):
         mtp_logits_list = lm_logits[self.mtp_prediction_key]
         return labels, lm_logits, mtp_logits_list
 
+class MTPCrossEntropyLossTemporalDiscounting(Loss):
+    def __init__(
+        self, 
+        target_key: str, 
+        prediction_key: str, 
+        mtp_prediction_key: str = "mtp_logits", 
+        mtp_lambda: float = 1.0,
+        discount_factor: float = 0.9,
+        mtp_lambda_scheduler = None,
+        tag: str = "MTPCrossEntropyLossTemporalDiscounting"
+    ):
+        """
+        Args:
+            target_key: Key to retrieve targets from the batch.
+            prediction_key: Key to retrieve the MAIN head logits.
+            mtp_prediction_key: Key to retrieve the list of MTP head logits.
+            mtp_lambda: Weighting factor for the MTP auxiliary loss. 
+                        Paper suggests 1.0 or similar. This is the initial value
+                        if mtp_lambda_scheduler is provided.
+            discount_factor: Temporal discount factor for future predictions.
+            mtp_lambda_scheduler: Optional scheduler for dynamically adjusting mtp_lambda.
+                                   If provided, uses scheduler.mtp_lambda instead of self.mtp_lambda.
+            tag: Tag for logging.
+        """
+        super().__init__(tag)
+        self.target_key = target_key
+        self.prediction_key = prediction_key
+        self.mtp_prediction_key = mtp_prediction_key
+        self.mtp_lambda = mtp_lambda
+        self.discount_factor = discount_factor
+        self.mtp_lambda_scheduler = mtp_lambda_scheduler
+
+        
+        # Mean over the tokens in the local-batch
+        self.loss_fun = CrossEntropyLoss(reduction="mean")
+
+    @overload
+    def __call__(self, forward_batch: InferenceResultBatch) -> torch.Tensor:
+        ...
+
+    @overload
+    def __call__(self, outputs: torch.Tensor, mtp_outputs: List[torch.Tensor], targets: torch.Tensor) -> torch.Tensor:
+        ...
+
+    def __call__(self, *args, **kwargs) -> torch.Tensor:
+        labels, _, mtp_logits_list = self._parse_arguments(args, kwargs)
+
+        # Move labels to correct device
+        labels = labels.to(mtp_logits_list[0].device).long()
+        shift_logits = mtp_logits_list[0].contiguous()
+        shift_labels = labels.contiguous().long()
+        
+        # --- 1. Main Head Loss (Next Token Prediction) ---
+        # If input is x_1...x_t, labels should be x_2...x_{t+1}
+        
+        # regular next-token prediction loss
+        # based on the first iteration logits
+        next_token_loss = self.loss_fun(
+            shift_logits.view(-1, shift_logits.size(-1)), 
+            shift_labels.view(-1)
+        )
+
+        # --- 2. MTP Heads Loss ---
+        # if mtp_logits_list:
+        mtp_loss_sum = 0.0
+        
+        for i, mtp_logits in enumerate(mtp_logits_list[1:]): # Skip the first one as its loss is already calculated in ce_loss
+            # i=0 -> Head predicts 2nd future token (t+2)
+            # i=1 -> Head predicts 3rd future token (t+3)
+            
+            # The 'distance' from the Main Head target is i + 1
+            shift = i + 1
+            
+            mtp_logits = mtp_logits.contiguous()
+            slice_logits = mtp_logits[:, :-shift, :].contiguous()
+            slice_labels = labels[:, shift:].contiguous()
+            
+            if slice_labels.size(1) > 0:
+                current_mtp_loss = self.loss_fun(
+                    slice_logits.view(-1, slice_logits.size(-1)),
+                    slice_labels.view(-1)
+                )
+                mtp_loss_sum += (current_mtp_loss * (self.discount_factor ** shift))
+        
+        # Use scheduled mtp_lambda if scheduler is provided, otherwise use the fixed value
+        current_mtp_lambda = (
+            self.mtp_lambda_scheduler.mtp_lambda 
+            if self.mtp_lambda_scheduler is not None 
+            else self.mtp_lambda
+        )
+        
+        # Combine losses
+        total_loss = next_token_loss + current_mtp_lambda * mtp_loss_sum
+        return total_loss, next_token_loss, current_mtp_lambda * mtp_loss_sum
+
+    def _parse_arguments(
+        self,
+        args: list,
+        kwargs: dict,
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
+        
+        if len(args) == 1 and isinstance(args[0], InferenceResultBatch):
+            forward_batch = args[0]
+            labels = forward_batch.get_targets(self.target_key)
+            lm_logits = forward_batch.get_predictions(self.prediction_key)
+        elif "forward_batch" in kwargs and isinstance(kwargs["forward_batch"], InferenceResultBatch):
+            forward_batch = kwargs["forward_batch"]
+            labels = forward_batch.get_targets(self.target_key)
+            lm_logits = forward_batch.get_predictions(self.prediction_key)
+        elif len(args) == 2 and all(isinstance(arg, torch.Tensor) for arg in args):
+            lm_logits, labels = args
+        elif (
+            "outputs" in kwargs
+            and "targets" in kwargs
+            and isinstance(kwargs["outputs"], torch.Tensor)
+            and isinstance(kwargs["targets"], torch.Tensor)
+        ):
+            lm_logits = kwargs["outputs"]
+            labels = kwargs["targets"]
+        elif (
+            len(args) == 1
+            and "targets" in kwargs
+            and isinstance(args[0], torch.Tensor)
+            and isinstance(kwargs["targets"], torch.Tensor)
+        ):
+            lm_logits = args[0]
+            labels = kwargs["targets"]
+        else:
+            raise TypeError("Invalid arguments for CLMCrossEntropyLoss.__call__")
+        
+        # Extract MTP logits list
+        mtp_logits_list = lm_logits[self.mtp_prediction_key]
+        return labels, lm_logits, mtp_logits_list
+
 
 def nce_loss(
     embedding1: torch.Tensor, embedding2: torch.Tensor, device: torch.device, is_asymmetric: bool, temperature: float

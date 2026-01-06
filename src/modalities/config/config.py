@@ -30,7 +30,8 @@ from modalities.config.pydantic_if_types import (
     PydanticPytorchModuleType,
     PydanticSamplerIFType,
     PydanticTokenizerIFType,
-    PydanticSTDSchedulerIFType
+    PydanticSTDSchedulerIFType,
+    PydanticMTPLambdaSchedulerIFType,
 )
 from modalities.config.utils import parse_torch_device
 from modalities.running_env.env_utils import (
@@ -92,6 +93,15 @@ class CLMMTPCrossEntropyLossConfig(CLMCrossEntropyLossConfig):
     prediction_key: str
     mtp_prediction_key: str = "mtp_logits"
     mtp_lambda: float
+
+class CLMMTPCrossEntropyLossTemporalDiscountingConfig(CLMCrossEntropyLossConfig):
+    target_key: str
+    prediction_key: str
+    mtp_prediction_key: str = "mtp_logits"
+    mtp_lambda: float
+    discount_factor: float = 0.9
+    mtp_lambda_scheduler: Optional[PydanticMTPLambdaSchedulerIFType] = None
+
 
 # Checkpointing
 class SaveEveryKStepsCheckpointingStrategyConfig(BaseModel):
@@ -263,6 +273,25 @@ class LinearSTDSchedulerConfig(BaseModel):
     start_factor: Annotated[float, Field(strict=True, gt=0.0)]
     end_factor: Annotated[float, Field(strict=True, ge=0.0)]
     total_steps: Annotated[int, Field(strict=True, gt=0)]
+
+
+# MTP Lambda Scheduler Configs
+class LinearMTPLambdaSchedulerConfig(BaseModel):
+    start_value: Annotated[float, Field(strict=True, ge=0.0)]
+    end_value: Annotated[float, Field(strict=True, ge=0.0)]
+    total_steps: Annotated[int, Field(strict=True, gt=0)]
+
+
+class CosineMTPLambdaSchedulerConfig(BaseModel):
+    start_value: Annotated[float, Field(strict=True, ge=0.0)]
+    end_value: Annotated[float, Field(strict=True, ge=0.0)]
+    total_steps: Annotated[int, Field(strict=True, gt=0)]
+
+class SigmoidMTPLambdaSchedulerConfig(BaseModel):
+    start_value: Annotated[float, Field(strict=True, ge=0.0)]
+    end_value: Annotated[float, Field(strict=True, ge=0.0)]
+    total_steps: Annotated[int, Field(strict=True, gt=0)]
+    steepness: Annotated[float, Field(strict=True, gt=0.0)] = 20.0
 
 
 class FSDP1CheckpointedOptimizerConfig(BaseModel):

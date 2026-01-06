@@ -391,6 +391,7 @@ class GPT2LLMConfig(BaseModel):
     penalize_recurrence_embedding_similarity: bool = False
     return_each_recurrence_output: bool = False
     separate_lm_head_norm: bool = False
+    use_last_iteration_output_as_final: bool = True
 
     @model_validator(mode="after")
     def check_divisibility(self) -> "GPT2LLMConfig":
@@ -1083,6 +1084,7 @@ class GPT2LLM(NNModel):
         penalize_recurrence_embedding_similarity: bool = False,
         return_each_recurrence_output: bool = False,
         separate_lm_head_norm: bool = False,
+        use_last_iteration_output_as_final: bool = True,
     ):
         """
         Initializes the GPT2LLM object.
@@ -1142,6 +1144,7 @@ class GPT2LLM(NNModel):
         self.penalize_recurrence_embedding_similarity = penalize_recurrence_embedding_similarity
         self.return_each_recurrence_output = return_each_recurrence_output
         self.separate_lm_head_norm = separate_lm_head_norm
+        self.use_last_iteration_output_as_final = use_last_iteration_output_as_final
         if return_each_recurrence_output:
             if len(recurrent_blocks_indices) != 1 or len(recurrent_blocks_indices[0]) != n_layer:
                 raise ValueError(
@@ -1519,7 +1522,6 @@ class GPT2LLM(NNModel):
         self.reset_processed_layers_cnt()
         
         final_output = {}
-        final_output["logits"] = h
         if self.penalize_recurrence_embedding_similarity:
             final_output["recurrence_embedding_cosine_similarity"] = torch.stack(recurrence_cosine_similarities).mean() if recurrence_cosine_similarities else torch.tensor(0.0)
             final_output["recurrence_embedding_mse_similarity"] = torch.stack(recurrence_mse_similarities).mean() if recurrence_mse_similarities else torch.tensor(0.0)
@@ -1548,7 +1550,11 @@ class GPT2LLM(NNModel):
             final_output["each_recurrence_entropy"] = torch.stack(final_output["each_recurrence_entropy"])
             if self.training:
                 self.record_recurrence_logits_entropy_stats(self.max_recurrences[-1]-1, entropy)
-
+        
+        if self.use_last_iteration_output_as_final:
+            final_output["logits"] = h
+        else:
+            final_output["logits"] = final_output["each_recurrence_logits"][0] 
         return final_output if len(final_output) > 1 else h
 
 def get_logits_entropy(logits: torch.Tensor):

@@ -6,7 +6,13 @@ import torch.nn as nn
 from pydantic import BaseModel
 from torch.utils.data import BatchSampler, DistributedSampler, SequentialSampler
 
-from modalities.optimizers.std_schedulers import CosineSTDScheduler, LinearSTDScheduler
+from modalities.optimizers.std_schedulers import (
+    CosineSTDScheduler, 
+    LinearSTDScheduler, 
+    LinearMTPLambdaScheduler, 
+    CosineMTPLambdaScheduler,
+    SigmoidMTPLambdaScheduler
+)
 
 from modalities.checkpointing.checkpoint_saving import CheckpointSaving
 from modalities.checkpointing.checkpoint_saving_strategies import (
@@ -28,12 +34,16 @@ from modalities.config.config import (
     CLMCrossEntropyLossConfig,
     CLMCrossEntropyWithPenaltyLossConfig,
     CLMMTPCrossEntropyLossConfig,
+    CLMMTPCrossEntropyLossTemporalDiscountingConfig,
     CombinedDatasetConfig,
     CompiledModelConfig,
     ConstantLRSchedulerConfig,
     CosineAnnealingLRSchedulerConfig,
     CosineSTDSchedulerConfig,
     LinearSTDSchedulerConfig,
+    LinearMTPLambdaSchedulerConfig,
+    CosineMTPLambdaSchedulerConfig,
+    SigmoidMTPLambdaSchedulerConfig,
     DCPAppStateConfig,
     DCPCheckpointLoadingConfig,
     DCPCheckpointSavingConfig,
@@ -92,7 +102,9 @@ from modalities.loss_functions import (
     CLMRecurrenceCosineSimPenaltyLoss, 
     CLMRecurrenceEntropyPenaltyLoss, 
     CLMRecurrenceWeightedLoss,
-    MTPCrossEntropyLoss
+    MTPCrossEntropyLoss,
+    MTPCrossEntropyLossTemporalDiscounting
+
 )
 from modalities.models.coca.coca_model import CoCa, CoCaConfig
 from modalities.models.coca.collator import CoCaCollateFnConfig, CoCaCollatorFn
@@ -249,6 +261,12 @@ COMPONENTS = [
         MTPCrossEntropyLoss,
         CLMMTPCrossEntropyLossConfig,
     ),
+    ComponentEntity(
+        "loss",
+        "clm_mtp_recurrence_loss_temporal_discounting",
+        MTPCrossEntropyLossTemporalDiscounting,
+        CLMMTPCrossEntropyLossTemporalDiscountingConfig,
+    ),
     # optmizers
     ComponentEntity("optimizer", "adam", OptimizerFactory.get_adam, AdamOptimizerConfig),
     ComponentEntity("optimizer", "adam_w", OptimizerFactory.get_adam_w, AdamWOptimizerConfig),
@@ -274,6 +292,10 @@ COMPONENTS = [
     ),
     ComponentEntity("scheduler", "cosine_std", CosineSTDScheduler, CosineSTDSchedulerConfig),
     ComponentEntity("scheduler", "linear_std", LinearSTDScheduler, LinearSTDSchedulerConfig),
+    # MTP Lambda Schedulers
+    ComponentEntity("scheduler", "linear_mtp_lambda", LinearMTPLambdaScheduler, LinearMTPLambdaSchedulerConfig),
+    ComponentEntity("scheduler", "cosine_mtp_lambda", CosineMTPLambdaScheduler, CosineMTPLambdaSchedulerConfig),
+    ComponentEntity("scheduler", "sigmoid_mtp_lambda", SigmoidMTPLambdaScheduler, SigmoidMTPLambdaSchedulerConfig),
     # tokenizers
     ComponentEntity("tokenizer", "pretrained_hf_tokenizer", PreTrainedHFTokenizer, PreTrainedHFTokenizerConfig),
     ComponentEntity("tokenizer", "pretrained_sp_tokenizer", PreTrainedSPTokenizer, PreTrainedSPTokenizerConfig),

@@ -30,7 +30,7 @@ from modalities.utils.debug_components import Debugging
 from modalities.utils.mfu import MFUCalculatorABC
 from modalities.utils.profilers.batch_generator import DatasetBatchGeneratorIF
 from modalities.utils.profilers.steppable_components import SteppableComponentIF
-from modalities.optimizers.std_schedulers import STDScheduler
+from modalities.optimizers.std_schedulers import STDScheduler, MTPLambdaScheduler
 
 
 class PydanticThirdPartyTypeIF:
@@ -77,6 +77,7 @@ PydanticLLMDataLoaderIFType = Annotated[LLMDataLoader, PydanticThirdPartyTypeIF(
 PydanticOptimizerIFType = Annotated[Optimizer, PydanticThirdPartyTypeIF(Optimizer)]
 PydanticLRSchedulerIFType = Annotated[LRScheduler, PydanticThirdPartyTypeIF(LRScheduler)]
 PydanticSTDSchedulerIFType = Annotated[STDScheduler, PydanticThirdPartyTypeIF(STDScheduler)]
+PydanticMTPLambdaSchedulerIFType = Annotated[MTPLambdaScheduler, PydanticThirdPartyTypeIF(MTPLambdaScheduler)]
 PydanticLossIFType = Annotated[Loss, PydanticThirdPartyTypeIF(Loss)]
 PydanticMessageSubscriberIFType = Annotated[MessageSubscriberIF, PydanticThirdPartyTypeIF(MessageSubscriberIF)]
 PydanticPytorchDeviceType = Annotated[torch.device, PydanticThirdPartyTypeIF(torch.device)]

@@ -588,6 +588,7 @@ class GPT2ModelFactory:
         penalize_recurrence_embedding_similarity: bool = False,
         return_each_recurrence_output: bool = False,
         separate_lm_head_norm: bool = False,
+        use_last_iteration_output_as_final: bool = True,
     ) -> GPT2LLM:
         config = dict(
             sample_key=sample_key,
@@ -621,6 +622,7 @@ class GPT2ModelFactory:
             penalize_recurrence_embedding_similarity=penalize_recurrence_embedding_similarity,
             return_each_recurrence_output=return_each_recurrence_output,
             separate_lm_head_norm=separate_lm_head_norm,
+            use_last_iteration_output_as_final=use_last_iteration_output_as_final,
         )
         if use_meta_device and use_weight_tying:
             raise ValueError(

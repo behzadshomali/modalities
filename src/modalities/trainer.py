@@ -167,6 +167,9 @@ class Trainer:
             optimizer.step()
             scheduler.step()
             current_std = std_scheduler.step() if std_scheduler is not None else None
+            # Step the mtp_lambda_scheduler if the loss function has one
+            if hasattr(loss_fun, 'mtp_lambda_scheduler') and loss_fun.mtp_lambda_scheduler is not None:
+                loss_fun.mtp_lambda_scheduler.step()
             optimizer.zero_grad()
             step_performed = True
         else:
@@ -359,6 +362,13 @@ class Trainer:
                     "grad norm avg": ResultItem(torch.mean(torch.Tensor(gradient_norm_scores)), 2),
                     "grad norm last": ResultItem(torch.tensor(gradient_norm_scores[-1]), 2),
                 }
+                
+                # Log mtp_lambda if a scheduler is being used
+                if hasattr(loss_fun, 'mtp_lambda_scheduler') and loss_fun.mtp_lambda_scheduler is not None:
+                    metrics["mtp_lambda"] = ResultItem(
+                        torch.tensor(loss_fun.mtp_lambda_scheduler.mtp_lambda), decimal_places=4
+                    )
+                
                 gradient_norm_scores = []
                 mfu_score = torch.tensor(-1.0)
                 if self.mfu_calculator is not None:
