@@ -292,6 +292,7 @@ class SigmoidMTPLambdaSchedulerConfig(BaseModel):
     end_value: Annotated[float, Field(strict=True, ge=0.0)]
     total_steps: Annotated[int, Field(strict=True, gt=0)]
     steepness: Annotated[float, Field(strict=True, gt=0.0)] = 20.0
+    cap_value: Optional[Annotated[float, Field(strict=True, ge=0.0)]] = None
 
 
 class FSDP1CheckpointedOptimizerConfig(BaseModel):

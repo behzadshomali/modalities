@@ -86,7 +86,7 @@ class CosineMTPLambdaScheduler(MTPLambdaScheduler):
 class SigmoidMTPLambdaScheduler(MTPLambdaScheduler):
     """Sigmoid schedule for mtp_lambda from start_value to end_value over total_steps."""
     
-    def __init__(self, start_value: float, end_value: float, total_steps: int, steepness: float = 10.0):
+    def __init__(self, start_value: float, end_value: float, total_steps: int, steepness: float = 10.0, cap_value: float = None):
         super().__init__(start_value)
         self.start_value = start_value
         self.end_value = end_value
@@ -97,4 +97,7 @@ class SigmoidMTPLambdaScheduler(MTPLambdaScheduler):
         t = min(self.last_step / self.total_steps, 1.0)
         # Sigmoid function centered at t=0.5
         sigmoid_t = 1 / (1 + math.exp(-self.steepness * (t - 0.5)))
-        return self.start_value + sigmoid_t * (self.end_value - self.start_value)
+        value = self.start_value + sigmoid_t * (self.end_value - self.start_value)
+        if self.cap_value is not None:
+            value = min(value, self.cap_value)
+        return value
