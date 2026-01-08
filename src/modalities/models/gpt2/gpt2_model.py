@@ -232,6 +232,7 @@ class RotaryTransform(QueryKeyValueTransform):
             Tuple containing the modified query tensor, key tensor, and value tensor.
         """
         self._cos_cached, self._sin_cached = self._update_cos_sin_tables(k)
+        
         q = self.apply_rotary_pos_emb(q, self._cos_cached, self._sin_cached)
         k = self.apply_rotary_pos_emb(k, self._cos_cached, self._sin_cached)
 
