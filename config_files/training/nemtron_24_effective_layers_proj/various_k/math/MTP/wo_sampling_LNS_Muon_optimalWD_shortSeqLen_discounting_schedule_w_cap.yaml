@@ -177,18 +177,18 @@ test_dataset:
   variant_key: combined
   config:
     datasets:
-    # - component_key: dataset
-    #   variant_key: packed_mem_map_dataset_continuous
-    #   config:
-    #     raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_23_part_00_SMALL_EVAL.pbin
-    #     sequence_length: ${settings.step_profile.sequence_length}
-    #     sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part19_eval.pbin
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_23_part_00_SMALL_EVAL.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
+    # - component_key: dataset
+    #   variant_key: packed_mem_map_dataset_continuous
+    #   config:
+    #     raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part19_eval.pbin
+    #     sequence_length: ${settings.step_profile.sequence_length}
+    #     sample_key:  ${settings.referencing_keys.sample_key}
 
 test_dataloader:
   component_key: data_loader
@@ -245,12 +245,16 @@ checkpoint_saving:
 
 loss_fn:
   component_key: loss
-  variant_key: clm_recurrence_cosine_sim_penalty_loss
+  variant_key: clm_mtp_recurrence_loss_temporal_discounting
   config:
     target_key: ${settings.referencing_keys.target_key}
     prediction_key: ${settings.referencing_keys.prediction_key}
-    penalty_alpha: 0
-
+    mtp_prediction_key: each_recurrence_logits
+    mtp_lambda: 0.1  # Initial value (will be overridden by scheduler)
+    discount_factor: 0.8
+    mtp_lambda_scheduler:
+      instance_key: mtp_lambda_scheduler
+      pass_type: BY_REFERENCE
 
 device_mesh:
   component_key: device_mesh
@@ -376,14 +380,17 @@ model_raw:
         normalized_shape: ${model_raw.config.n_embd}
         eps: 1.0e-05
     use_weight_tying: false
-    recurrent_blocks_indices: [[3,4,5], [7,8,9]]
+    recurrent_blocks_indices: [[0,1,2,3,4,5,6,7,8,9,10,11]]
     k_last_recurrence_gradient_backprops: -1 # -1 means the gradients for all steps will be propagated
-    recurrent_blocks_max_recurrences: [4,4]
+    recurrent_blocks_max_recurrences: 3
     sample_iterations: false
     use_recurrence_embedding: true
+    recurrence_embedding_base_freq: 100.0
     use_LNS: true
     penalize_recurrence_embedding_similarity: true
-    return_each_recurrence_output: false
+    return_each_recurrence_output: true
+    separate_lm_head_norm: true
+    use_last_iteration_output_as_final: false
 
 lr_scheduler:
   component_key: scheduler
@@ -482,18 +489,16 @@ evaluation_subscriber:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_24_effective_layers_1B_MATH
     mode: ONLINE
-    experiment_id: Muon_ShortSeq${settings.step_profile.sequence_length}_OptimalWD_LR${optimizer.config.lr}_useLNS_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_sample=${model_raw.config.sample_iterations}_recurEmbed=${model_raw.config.use_recurrence_embedding}_lastBackProp=${model_raw.config.k_last_recurrence_gradient_backprops}_${settings.experiment_id}
+    experiment_id: MTPTD(sdl)_cap_${loss_fn.config.discount_factor}_Muon_ShortSeq${settings.step_profile.sequence_length}_OptimalWD_LR${optimizer.config.lr}_useLNS_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_sample=${model_raw.config.sample_iterations}_recurEmbed=${model_raw.config.use_recurrence_embedding}_lastBackProp=${model_raw.config.k_last_recurrence_gradient_backprops}_${settings.experiment_id}
     directory: /raid/s3/opengptx/behzad_shomali/wandb_storage
     config_file_path: ${settings.config_file_path}
 
-# mfu_calculator:
-#   component_key: mfu_calculator
-#   variant_key: gpt2
-#   config:
-#     n_layer: ${model_raw.config.n_layer}
-#     sequence_length: ${settings.step_profile.sequence_length}
-#     n_embd: ${model_raw.config.n_embd}
-#     world_size: ${settings.cuda_env.world_size}
-#     fsdp_model:
-#       instance_key: fsdp_model
-#       pass_type: BY_REFERENCE
+mtp_lambda_scheduler:
+  component_key: scheduler
+  variant_key: sigmoid_mtp_lambda
+  config:
+    start_value: 0.0
+    end_value: 1.0
+    steepness: 20.0
+    cap_value: 0.3
+    total_steps: ${settings.training_target.num_target_steps}
