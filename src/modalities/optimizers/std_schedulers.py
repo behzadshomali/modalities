@@ -92,6 +92,7 @@ class SigmoidMTPLambdaScheduler(MTPLambdaScheduler):
         self.end_value = end_value
         self.total_steps = total_steps
         self.steepness = steepness
+        self.cap_value = cap_value
 
     def get_mtp_lambda(self):
         t = min(self.last_step / self.total_steps, 1.0)
