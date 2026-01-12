@@ -75,7 +75,7 @@ class Evaluator:
                 loss = loss_fun(result_batch)
 
                 if isinstance(loss, tuple):
-                    loss, ce_loss, aux_loss = loss
+                    loss = loss[0] # loss, ce_loss, aux_loss, ...
         return loss
 
     def evaluate(

@@ -286,6 +286,7 @@ class MTPCrossEntropyLoss(Loss):
         prediction_key: str, 
         mtp_prediction_key: str = "mtp_logits", 
         mtp_lambda: float = 1.0,
+        use_gradient_projection: bool = False,
         tag: str = "MTPCrossEntropyLoss"
     ):
         """
@@ -295,6 +296,7 @@ class MTPCrossEntropyLoss(Loss):
             mtp_prediction_key: Key to retrieve the list of MTP head logits.
             mtp_lambda: Weighting factor for the MTP auxiliary loss. 
                         Paper suggests 1.0 or similar.
+            use_gradient_projection: If True, returns detailed losses to allow gradient projection.
             tag: Tag for logging.
         """
         super().__init__(tag)
@@ -302,6 +304,7 @@ class MTPCrossEntropyLoss(Loss):
         self.prediction_key = prediction_key
         self.mtp_prediction_key = mtp_prediction_key
         self.mtp_lambda = mtp_lambda
+        self.use_gradient_projection = use_gradient_projection
         
         # Mean over the tokens in the local-batch
         self.loss_fun = CrossEntropyLoss(reduction="mean")
@@ -335,6 +338,7 @@ class MTPCrossEntropyLoss(Loss):
         # --- 2. MTP Heads Loss ---
         # if mtp_logits_list:
         mtp_loss_sum = 0.0
+        mtp_component_losses = []
         
         for i, mtp_logits in enumerate(mtp_logits_list[1:]): # Skip the first one as its loss is already calculated in ce_loss
             # i=0 -> Head predicts 2nd future token (t+2)
@@ -353,10 +357,21 @@ class MTPCrossEntropyLoss(Loss):
                     slice_labels.view(-1)
                 )
                 mtp_loss_sum += current_mtp_loss
+                # We store the weighted component expected for backward
+                # The total loss uses average: mtp_lambda * sum / N
+                # So component is: mtp_lambda * current_mtp_loss / N
+                if self.use_gradient_projection:
+                    N = len(mtp_logits_list) - 1
+                    mtp_component_losses.append(self.mtp_lambda * current_mtp_loss / N)
         
         # Combine losses
-        total_loss = next_token_loss + self.mtp_lambda * (mtp_loss_sum / (len(mtp_logits_list) - 1))
-        return total_loss, next_token_loss, self.mtp_lambda * (mtp_loss_sum / (len(mtp_logits_list) - 1))
+        mtp_term = self.mtp_lambda * (mtp_loss_sum / (len(mtp_logits_list) - 1))
+        total_loss = next_token_loss + mtp_term
+        
+        if self.use_gradient_projection:
+            return total_loss, next_token_loss, mtp_term, mtp_component_losses
+            
+        return total_loss, next_token_loss, mtp_term
 
     def _parse_arguments(
         self,
@@ -406,6 +421,7 @@ class MTPCrossEntropyLossTemporalDiscounting(Loss):
         mtp_lambda: float = 1.0,
         discount_factor: float = 0.9,
         mtp_lambda_scheduler = None,
+        use_gradient_projection: bool = False,
         tag: str = "MTPCrossEntropyLossTemporalDiscounting"
     ):
         """
@@ -419,6 +435,7 @@ class MTPCrossEntropyLossTemporalDiscounting(Loss):
             discount_factor: Temporal discount factor for future predictions.
             mtp_lambda_scheduler: Optional scheduler for dynamically adjusting mtp_lambda.
                                    If provided, uses scheduler.mtp_lambda instead of self.mtp_lambda.
+            use_gradient_projection: If True, returns detailed losses to allow gradient projection.
             tag: Tag for logging.
         """
         super().__init__(tag)
@@ -428,6 +445,7 @@ class MTPCrossEntropyLossTemporalDiscounting(Loss):
         self.mtp_lambda = mtp_lambda
         self.discount_factor = discount_factor
         self.mtp_lambda_scheduler = mtp_lambda_scheduler
+        self.use_gradient_projection = use_gradient_projection
 
         
         # Mean over the tokens in the local-batch
@@ -462,7 +480,15 @@ class MTPCrossEntropyLossTemporalDiscounting(Loss):
         # --- 2. MTP Heads Loss ---
         # if mtp_logits_list:
         mtp_loss_sum = 0.0
+        mtp_component_losses = []
         
+        # Use scheduled mtp_lambda if scheduler is provided, otherwise use the fixed value
+        current_mtp_lambda = (
+            self.mtp_lambda_scheduler.mtp_lambda 
+            if self.mtp_lambda_scheduler is not None 
+            else self.mtp_lambda
+        )
+
         for i, mtp_logits in enumerate(mtp_logits_list[1:]): # Skip the first one as its loss is already calculated in ce_loss
             # i=0 -> Head predicts 2nd future token (t+2)
             # i=1 -> Head predicts 3rd future token (t+3)
@@ -479,18 +505,19 @@ class MTPCrossEntropyLossTemporalDiscounting(Loss):
                     slice_logits.view(-1, slice_logits.size(-1)),
                     slice_labels.view(-1)
                 )
-                mtp_loss_sum += (current_mtp_loss * (self.discount_factor ** shift))
-        
-        # Use scheduled mtp_lambda if scheduler is provided, otherwise use the fixed value
-        current_mtp_lambda = (
-            self.mtp_lambda_scheduler.mtp_lambda 
-            if self.mtp_lambda_scheduler is not None 
-            else self.mtp_lambda
-        )
+                weighted_loss = current_mtp_loss * (self.discount_factor ** shift)
+                mtp_loss_sum += weighted_loss
+                if self.use_gradient_projection:
+                    mtp_component_losses.append(current_mtp_lambda * weighted_loss)
         
         # Combine losses
-        total_loss = next_token_loss + current_mtp_lambda * mtp_loss_sum
-        return total_loss, next_token_loss, current_mtp_lambda * mtp_loss_sum
+        mtp_term = current_mtp_lambda * mtp_loss_sum
+        total_loss = next_token_loss + mtp_term
+        
+        if self.use_gradient_projection:
+            return total_loss, next_token_loss, mtp_term, mtp_component_losses
+            
+        return total_loss, next_token_loss, mtp_term
 
     def _parse_arguments(
         self,

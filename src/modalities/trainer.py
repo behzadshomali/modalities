@@ -3,6 +3,15 @@ from enum import Enum
 from typing import Callable, Optional
 
 import torch
+
+# try:
+#     # Use try-except to avoid issues if _functorch is not available or config changed
+#     import torch._functorch.config
+#     # Fix for "compiled with non-empty donated buffers" error when using gradients with retain_graph=True
+#     torch._functorch.config.donated_buffer = False
+# except (ImportError, AttributeError):
+#     pass
+
 import torch.distributed as dist
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -101,6 +110,158 @@ class Trainer:
         """
         return (micro_batch_id + 1) // gradient_acc_steps
 
+    def _perform_gradient_projection(
+        self,
+        model: FSDP,
+        main_loss: torch.Tensor,
+        aux_loss_list: list[torch.Tensor],
+        scaling_factor: float,
+        num_train_steps_done: int
+    ) -> None:
+        """
+        Performs PCGrad-style gradient projection for MTP losses.
+        Projects auxiliary gradients onto the normal plane of the main task gradient if they conflict.
+        """
+        # Helper to get all trainable parameters
+        params = [p for p in model.parameters() if p.requires_grad]
+
+        # Optimization: Use flattened vectors to avoid python loop overhead
+        def _get_flat_grads(model_params):
+            views = []
+            for p in model_params:
+                if p.grad is not None:
+                    g = p.grad
+                    if hasattr(g, "to_local"):
+                        g = g.to_local()
+                    views.append(g.view(-1))
+                else:
+                    p_local = p
+                    if hasattr(p, "to_local"):
+                        p_local = p.to_local()
+                    views.append(torch.zeros(p_local.numel(), device=p_local.device, dtype=p_local.dtype))
+            return torch.cat(views)
+
+        def _add_flat_grads_to_model(model_params, flat_grads):
+            offset = 0
+            for p in model_params:
+                p_local = p
+                if hasattr(p, "to_local"):
+                    p_local = p.to_local()
+                
+                numel = p_local.numel()
+                if numel > 0:
+                    grad_slice = flat_grads[offset : offset + numel].view_as(p_local)
+                    if p.grad is None:
+                        if hasattr(p, "to_local"):
+                             p.grad = torch.zeros_like(p)
+                             p.grad.to_local().copy_(grad_slice)
+                        else:
+                             p.grad = grad_slice.clone()
+                    else:
+                        if hasattr(p.grad, "to_local"):
+                             p.grad.to_local().add_(grad_slice)
+                        else:
+                             p.grad.add_(grad_slice)
+                    offset += numel
+
+        # 1. Stash accumulated gradients from previous micro-batches (if any)
+        stashed_grads = {p: p.grad.clone() for p in params if p.grad is not None}
+        
+        # Clear grads for separate computation
+        model.zero_grad()
+        
+        # 2. Compute Main Task Gradient (Next Token Prediction)
+        (main_loss / scaling_factor).backward(retain_graph=True)
+        
+        # Store main grads as flat vector
+        main_grads_flat = _get_flat_grads(params)
+        
+        model.zero_grad()
+        
+        # Initialize final_grads with main_grads
+        final_grads_flat = main_grads_flat.clone()
+        
+        # Precompute main norm
+        norm_main_sq = torch.dot(main_grads_flat, main_grads_flat)
+        dist.all_reduce(norm_main_sq)
+        norm_main = torch.sqrt(norm_main_sq)
+        
+        total_conflicts = 0
+        cosine_sims = []
+        
+        # 3. Process each Auxiliary Task
+        for i, aux_loss in enumerate(aux_loss_list):
+            (aux_loss / scaling_factor).backward(retain_graph=True)
+            
+            aux_grads_flat = _get_flat_grads(params)
+            
+            # Consolidated All-Reduce
+            dot_prod = torch.dot(main_grads_flat, aux_grads_flat)
+            norm_aux_sq = torch.dot(aux_grads_flat, aux_grads_flat)
+            
+            stats = torch.stack([dot_prod, norm_aux_sq])
+            dist.all_reduce(stats)
+            dot_prod_global = stats[0]
+            norm_aux_sq_global = stats[1]
+            
+            norm_aux = torch.sqrt(norm_aux_sq_global)
+            
+            if norm_main > 0 and norm_aux > 0:
+                cos_sim = dot_prod_global / (norm_main * norm_aux)
+            else:
+                 if norm_main == 0 or norm_aux == 0:
+                     # This can happen if gradients are zero (e.g. early training or masked)
+                     # Log warning or just 0 similarity? Original code raised ValueError.
+                     # We keep original behavior for consistency but this might be strict.
+                     raise ValueError(
+                        f"Zero norm encountered. norm_main: {norm_main.item()}, norm_aux: {norm_aux.item()}"
+                    )
+                 cos_sim = torch.tensor(0.0, device=main_grads_flat.device)
+
+            cosine_sims.append(cos_sim.item())
+            
+            # Check for conflict
+            if dot_prod_global < 0:
+                total_conflicts += 1
+                # Project aux gradient
+                # g_a_proj = g_a - (dot / |g_m|^2) * g_m
+                proj_coeff = dot_prod_global / (norm_main_sq + 1e-8)
+                
+                # final += g_a - proj * g_m
+                # We can do this in place on final_grads_flat
+                # final_grads_flat += aux_grads_flat - proj_coeff * main_grads_flat
+                final_grads_flat.add_(aux_grads_flat).add_(main_grads_flat, alpha=-proj_coeff)
+            else:
+                # No conflict, just add original aux gradient
+                final_grads_flat.add_(aux_grads_flat)
+            
+            model.zero_grad()
+            
+        # 4. Restore stashed grads and add the computed final_grads
+        for p, g in stashed_grads.items():
+            p.grad = g # Restore accumulated gradients
+            
+        _add_flat_grads_to_model(params, final_grads_flat)
+                
+        # 5. Log stats to WandB
+        metrics = {
+            "mtp_gradient_stats/num_conflicts": ResultItem(torch.tensor(float(total_conflicts)), decimal_places=1),
+        }
+        for i, sim in enumerate(cosine_sims):
+            metrics[f"mtp_gradient_stats/cosine_sim_head_{i}"] = ResultItem(torch.tensor(sim), decimal_places=4)
+            
+        evaluation_result = EvaluationResultBatch(
+            losses={},
+            metrics=metrics,
+            throughput_metrics={},
+            dataloader_tag="mtp_gradient_projection",
+            num_train_steps_done=num_train_steps_done,
+        )
+        self._publish_evaluation_result(
+            evaluation_result_publisher=self.evaluation_result_publisher,
+            evaluation_result=evaluation_result
+        )
+
     def _train_batch(
         self,
         batch: DatasetBatch,
@@ -155,12 +316,35 @@ class Trainer:
             current_std = std_scheduler.std if std_scheduler is not None else None
             result_batch = model_predict_batch(model=model, batch=batch, sampling_std=current_std)
             loss = loss_fun(result_batch)
+            
+            aux_loss_list = None
             if isinstance(loss, tuple):
-                loss, ce_loss, aux_loss = loss
+                if len(loss) == 4:
+                    loss, ce_loss, aux_loss, aux_loss_list = loss
+                elif len(loss) == 3:
+                    loss, ce_loss, aux_loss = loss
+                else:
+                    loss = loss[0]
+                    ce_loss = None
+                    aux_loss = None
             else:
                 ce_loss = None
                 aux_loss = None
-            (loss / self.gradient_acc_steps).backward()
+            
+            # Check if gradient projection is requested and available
+            if aux_loss_list is not None and getattr(loss_fun, "use_gradient_projection", False):
+                current_steps_done = Trainer._get_num_train_steps_done(
+                    micro_batch_id, self.gradient_acc_steps
+                )
+                self._perform_gradient_projection(
+                    model, 
+                    ce_loss, 
+                    aux_loss_list, 
+                    self.gradient_acc_steps,
+                    current_steps_done
+                )
+            else:
+                (loss / self.gradient_acc_steps).backward()
 
         if (micro_batch_id + 1) % self.gradient_acc_steps == 0:
             gradient_norm_score = self.gradient_clipper.clip_gradients()
