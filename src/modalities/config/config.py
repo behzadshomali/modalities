@@ -550,6 +550,7 @@ class WandBEvaluationResultSubscriberConfig(BaseModel):
     mode: WandbMode
     directory: Path
     config_file_path: Path
+    tags: Optional[list[str]] = None
 
 
 class RichResultSubscriberConfig(BaseModel):
