@@ -1,0 +1,479 @@
+settings:
+  experiment_id: ${modalities_env:experiment_id}
+  config_file_path: ${modalities_env:config_file_path}
+  referencing_keys:
+    sample_key: input_ids
+    target_key: target_ids
+    prediction_key: logits
+  cuda_env:
+    local_rank: ${cuda_env:LOCAL_RANK}
+    global_rank: ${cuda_env:RANK}
+    world_size: ${cuda_env:WORLD_SIZE}
+  paths:
+    checkpoint_saving_path: /raid/s3/opengptx/behzad_shomali/checkpoints
+    train_dataset_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_24_eval.pbin
+    # test_dataset_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part19.pbin
+  intervals:
+    training_log_interval_in_steps: 10
+    checkpointing_interval_in_steps: 5374 # 4 checkpoints
+    evaluation_interval_in_steps: 3500
+  consistency_enforcement:
+    enforce_tokens_per_step_consistency: true
+    enforce_last_step_logged: false
+    enforce_last_step_evaluated: false
+    enforce_last_step_checkpointed: false
+  step_profile:
+    gradient_accumulation_steps: 39
+    local_train_micro_batch_size: 6
+    sequence_length: 1024
+    dp_degree:
+      instance_key: dp_degree
+      pass_type: BY_REFERENCE
+  training_target: 
+    num_target_tokens: 6872666112 #13920178176 # global_num_tokens // sequence_length // num_ranks // local_micro_batch_size // gradient_accumulation_steps
+      # component_key: number_conversion
+      # variant_key: num_tokens_from_packed_mem_map_dataset_continuous
+      # config:
+      #   dataset_path: ${settings.paths.train_dataset_path}
+      #   sequence_length: ${settings.step_profile.sequence_length}
+      #   dp_degree:
+      #     instance_key: dp_degree
+      #     pass_type: BY_REFERENCE
+      #   local_micro_batch_size: ${settings.step_profile.local_train_micro_batch_size}
+      #   gradient_accumulation_steps: ${settings.step_profile.gradient_accumulation_steps}
+      #   sample_key: ${settings.referencing_keys.sample_key}
+    num_target_steps:
+      component_key: number_conversion
+      variant_key: num_steps_from_num_tokens
+      config:
+        dp_degree:
+          instance_key: dp_degree
+          pass_type: BY_REFERENCE
+        local_micro_batch_size: ${settings.step_profile.local_train_micro_batch_size}
+        global_num_tokens: ${settings.training_target.num_target_tokens}
+        sequence_length: ${settings.step_profile.sequence_length}
+        gradient_accumulation_steps: ${settings.step_profile.gradient_accumulation_steps}
+  training_progress:
+    global_num_seen_tokens: 0
+    num_seen_steps: 0
+    num_seen_samples: 0
+    last_step: -1
+
+collate_fn:
+  component_key: collate_fn
+  variant_key: gpt_2_llm_collator
+  config:
+    sample_key: ${settings.referencing_keys.sample_key}
+    target_key: ${settings.referencing_keys.target_key}
+
+train_dataset:
+  component_key: dataset
+  variant_key: combined
+  config:
+    datasets:
+    # - component_key: dataset
+    #   variant_key: packed_mem_map_dataset_continuous
+    #   config:
+    #     raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_24_eval.pbin
+    #     sequence_length: ${settings.step_profile.sequence_length}
+    #     sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part9.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part10.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part11.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part12.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part13.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part14.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part15.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part16.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part17.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part18_eval.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+
+
+train_dataloader:
+  component_key: data_loader
+  variant_key: default
+  config:
+    num_workers: 0
+    pin_memory: true
+    dataloader_tag: train
+    dataset:
+      instance_key: train_dataset
+      pass_type: BY_REFERENCE
+    batch_sampler:
+      component_key: batch_sampler
+      variant_key: default
+      config:
+        batch_size: ${settings.step_profile.local_train_micro_batch_size}
+        drop_last: true
+        sampler:
+          component_key: sampler
+          variant_key: resumable_distributed_sampler
+          config:
+            dataset:
+              instance_key: train_dataset
+              pass_type: BY_REFERENCE
+            rank: ${settings.cuda_env.global_rank}
+            num_replicas: ${settings.cuda_env.world_size}
+            shuffle: true
+            seed: 42
+            drop_last: true
+            skip_num_global_samples: ${settings.training_progress.num_seen_samples}
+    collate_fn:
+      instance_key: collate_fn
+      pass_type: BY_REFERENCE
+
+test_dataset:
+  component_key: dataset
+  variant_key: combined
+  config:
+    datasets:
+    - component_key: dataset
+      variant_key: packed_mem_map_dataset_continuous
+      config:
+        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_23_part_00_SMALL_EVAL.pbin
+        sequence_length: ${settings.step_profile.sequence_length}
+        sample_key:  ${settings.referencing_keys.sample_key}
+    # - component_key: dataset
+    #   variant_key: packed_mem_map_dataset_continuous
+    #   config:
+    #     raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part19_eval.pbin
+    #     sequence_length: ${settings.step_profile.sequence_length}
+    #     sample_key:  ${settings.referencing_keys.sample_key}
+
+test_dataloader:
+  component_key: data_loader
+  variant_key: default
+  config:
+    num_workers: 0
+    pin_memory: true
+    dataloader_tag: test
+    dataset:
+      instance_key: test_dataset
+      pass_type: BY_REFERENCE
+    batch_sampler:
+      component_key: batch_sampler
+      variant_key: default
+      config:
+        batch_size: 32
+        drop_last: true
+        sampler:
+          component_key: sampler
+          variant_key: distributed_sampler
+          config:
+            rank: ${settings.cuda_env.global_rank}
+            num_replicas: ${settings.cuda_env.world_size}
+            shuffle: false
+            drop_last: true
+            dataset:
+              instance_key: test_dataset
+              pass_type: BY_REFERENCE
+    collate_fn:
+      instance_key: collate_fn
+      pass_type: BY_REFERENCE
+
+
+eval_dataloaders:
+  - instance_key: test_dataloader
+    pass_type: BY_REFERENCE
+
+checkpoint_saving:
+  component_key: checkpoint_saving
+  variant_key: default
+  config:
+    checkpoint_saving_strategy:
+      component_key: checkpoint_saving_strategy
+      variant_key: save_k_most_recent_checkpoints_strategy
+      config:
+        k: -1
+    checkpoint_saving_execution:
+      component_key: checkpoint_saving_execution
+      variant_key: dcp
+      config:
+        checkpoint_path: ${settings.paths.checkpoint_saving_path}
+        global_rank: ${settings.cuda_env.global_rank}
+        experiment_id: ${settings.experiment_id}
+
+loss_fn:
+  component_key: loss
+  variant_key: clm_recurrence_cosine_sim_penalty_loss
+  config:
+    target_key: ${settings.referencing_keys.target_key}
+    prediction_key: ${settings.referencing_keys.prediction_key}
+    penalty_alpha: 0
+
+# loss_fn:
+#   component_key: loss
+#   variant_key: clm_cross_entropy_loss
+#   config:
+#     target_key: ${settings.referencing_keys.target_key}
+#     prediction_key: ${settings.referencing_keys.prediction_key}
+
+
+device_mesh:
+  component_key: device_mesh
+  variant_key: default
+  config:
+    device_type: cuda
+    data_parallel_replicate_degree: 1
+    data_parallel_shard_degree: -1
+    world_size: ${settings.cuda_env.world_size}
+
+dp_degree:
+  component_key: number_conversion
+  variant_key: parallel_degree
+  config:
+    device_mesh:
+      instance_key: device_mesh
+      pass_type: BY_REFERENCE
+    parallelism_methods: [dp_shard, dp_replicate]
+
+app_state:
+  component_key: app_state
+  variant_key: raw
+  config:
+    model:
+      instance_key: initialized_model
+      pass_type: BY_REFERENCE
+    optimizer:
+      instance_key: optimizer
+      pass_type: BY_REFERENCE
+    lr_scheduler:
+      instance_key: lr_scheduler
+      pass_type: BY_REFERENCE
+    std_scheduler:
+      instance_key: std_scheduler
+      pass_type: BY_REFERENCE
+
+initialized_model:
+  component_key: model
+  variant_key: model_initialized
+  config:
+    model:
+      instance_key: fsdp_model
+      pass_type: BY_REFERENCE
+    model_initializer:
+      component_key: model_initialization
+      variant_key: composed
+      config:
+        model_type: gpt2
+        weight_init_type: scaled
+        mean: 0.0
+        std: 0.02
+        num_layers: ${model_raw.config.n_layer}
+
+fsdp_model:
+  component_key: model
+  variant_key: fsdp2_wrapped
+  config:
+    model:
+      instance_key: compiled_model
+      pass_type: BY_REFERENCE
+    device_mesh:
+      instance_key: device_mesh
+      pass_type: BY_REFERENCE
+    mixed_precision_settings:
+      param_dtype: BF_16
+      reduce_dtype: BF_16
+    block_names: [GPT2Block]
+
+compiled_model:
+  component_key: model
+  variant_key: compiled
+  config:
+    model:
+      instance_key: model_raw
+      pass_type: BY_REFERENCE
+    block_names: [GPT2Block]
+
+model_raw: # 225932160
+  component_key: model
+  variant_key: gpt2
+  config:
+    use_meta_device: false
+    sample_key: ${settings.referencing_keys.sample_key}
+    poe_type: NOPE
+    sequence_length: ${settings.step_profile.sequence_length}
+    prediction_key: ${loss_fn.config.prediction_key}
+    vocab_size: 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
+    n_layer: 18
+    n_head_q: 24
+    n_head_kv: 24
+    ffn_hidden: 3584
+    n_embd: 768
+    dropout: 0.0
+    bias: false
+    attention_config:
+      qkv_transforms:
+        - type_hint: RotaryTransform
+          config:
+            n_embd: ${model_raw.config.n_embd}
+            n_head: ${model_raw.config.n_head_q} #it has to be head_q here
+            seq_length_dim: -2
+            base_freq: 10000
+      qk_norm_config:
+        norm_type: pytorch_rms_norm
+        config:
+          normalized_shape: 32 # n_embd / n_head
+          eps: 1.0e-05
+    attention_implementation: pytorch_flash
+    activation_type: swiglu
+    attention_norm_config:
+      norm_type: pytorch_rms_norm
+      config:
+        normalized_shape: ${model_raw.config.n_embd}
+        eps: 1.0e-05
+    ffn_norm_config:
+      norm_type: pytorch_rms_norm
+      config:
+        normalized_shape: ${model_raw.config.n_embd}
+        eps: 1.0e-05
+    lm_head_norm_config:
+      norm_type: pytorch_rms_norm
+      config:
+        normalized_shape: ${model_raw.config.n_embd}
+        eps: 1.0e-05
+    use_weight_tying: false
+    recurrent_blocks_indices: [[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]]
+    k_last_recurrence_gradient_backprops: -1 # -1 means the gradients for all steps will be propagated
+    recurrent_blocks_max_recurrences: 3
+    sample_iterations: false
+    use_recurrence_embedding: false
+    use_LNS: true
+    penalize_recurrence_embedding_similarity: false
+    return_each_recurrence_output: false
+
+lr_scheduler:
+  component_key: scheduler
+  variant_key: onecycle_lr
+  config:
+    optimizer:
+      instance_key: optimizer
+      pass_type: BY_REFERENCE
+    max_lr: 0.002 #0.002953
+    cycle_momentum: false
+    div_factor: 10
+    final_div_factor: 1
+    total_steps: ${settings.training_target.num_target_steps}
+    pct_start: 0.001
+    anneal_strategy: cos
+    last_epoch: ${settings.training_progress.last_step}
+
+std_scheduler:
+  component_key: scheduler
+  variant_key: cosine_std
+  config: 
+    start_factor: 1
+    end_factor: 0
+    total_steps: ${settings.training_target.num_target_steps}
+
+optimizer:
+  component_key: optimizer
+  variant_key: muon
+  config:
+    lr: 0.002 #0.002953
+    adamw_betas: [0.9, 0.95]
+    adamw_eps: 1e-8
+    weight_decay: 0.0174 #1/(28682*0.002)
+    weight_decay_groups_excluded: [embedding, layernorm, pytorch_rms_norm]
+    wrapped_model:
+      instance_key: initialized_model
+      pass_type: BY_REFERENCE
+
+gradient_clipper:
+  component_key: gradient_clipper
+  variant_key: fsdp2
+  config:
+    wrapped_model:
+      instance_key: initialized_model
+      pass_type: BY_REFERENCE
+    norm_type: P2_NORM
+    max_norm: 1.0
+    device_mesh:
+      instance_key: device_mesh
+      pass_type: BY_REFERENCE
+
+progress_subscriber:
+  component_key: progress_subscriber
+  variant_key: rich
+  config:
+    global_rank: ${settings.cuda_env.global_rank}
+    num_seen_steps: ${settings.training_progress.num_seen_steps}
+    num_target_steps: ${settings.training_target.num_target_steps}
+    train_dataloader_tag: ${train_dataloader.config.dataloader_tag}
+    eval_dataloaders:
+      instance_key: eval_dataloaders
+      pass_type: BY_REFERENCE
+
+evaluation_subscriber:
+  component_key: results_subscriber
+  variant_key: wandb
+  config:
+    global_rank: ${settings.cuda_env.global_rank}
+    project: nemotron_24_effective_layers_1B_MATH
+    mode: ONLINE
+    experiment_id: IncreaseHidden${model_raw.config.n_embd}_${settings.step_profile.sequence_length}_LR${optimizer.config.lr}_useLNS_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_recurEmbed=${model_raw.config.use_recurrence_embedding}_lastBackProp=${model_raw.config.k_last_recurrence_gradient_backprops}_${settings.experiment_id}
+    directory: /raid/s3/opengptx/behzad_shomali/wandb_storage
+    config_file_path: ${settings.config_file_path}
+    tags: [IncreaseHidden, ShortSeq, Muon, OptimalWD]
+
+# mfu_calculator:
+#   component_key: mfu_calculator
+#   variant_key: gpt2
+#   config:
+#     n_layer: ${model_raw.config.n_layer}
+#     sequence_length: ${settings.step_profile.sequence_length}
+#     n_embd: ${model_raw.config.n_embd}
+#     world_size: ${settings.cuda_env.world_size}
+#     fsdp_model:
+#       instance_key: fsdp_model
+#       pass_type: BY_REFERENCE
