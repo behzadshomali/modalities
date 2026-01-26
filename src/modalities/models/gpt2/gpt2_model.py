@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Annotated, Callable, Mapping, Optional, Any, overload, Union
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from pydantic import BaseModel, Field, model_validator, validator
 
@@ -69,12 +70,13 @@ class BlockTypes(str, Enum):
 
     Attributes:
         STANDARD (str): Represents the standard GPT2 block type.
-        RECURSIVE (str): Represents the recursive GPT2 block type.
+        GROUP_RECURSIVE_MTP (str): Represents the recursive GPT2 block type used for MTP.
         GROUP_RECURSIVE (str): Represents the group recursive GPT2 block type.
     """
 
     STANDARD = "STANDARD"
     RECURSIVE = "RECURSIVE"
+    GROUP_RECURSIVE_MTP = "GROUP_RECURSIVE_MTP"
     GROUP_RECURSIVE = "GROUP_RECURSIVE"
 
 
@@ -812,6 +814,7 @@ class GPT2Block(nn.Module):
                 is only relevant if the activation_type is SwiGLU. Defaults to None.
         """
         super().__init__()
+        self.block_type = BlockTypes.STANDARD
         self.attention_norm = attention_norm
         self.ffn_norm = ffn_norm
         self._check_ffn_hidden_dim(n_embd=n_embd, ffn_hidden=ffn_hidden)
@@ -877,6 +880,183 @@ class GPT2Block(nn.Module):
         return x  
 
 
+class GroupRecursiveGPT2MTPBlock(nn.Module):
+    """
+    GroupRecursiveGPT2MTPBlock class.
+    This class extends the functionality of a standard GPT2 block by packing multiple GPT2 blocks
+    into a single recurrent block. 
+    """
+    def __init__(
+        self,
+        gpt2_blocks: list[GPT2Block],
+        max_recurrence: int,
+        n_embd: int,
+        k_last_recurrence_gradient_backprop: int = -1,
+        sample_iterations: bool = False,
+        use_recurrence_embedding: bool = False,
+        recurrence_embedding_base_freq: float = 10000.0,
+        penalize_recurrence_embedding_similarity: bool = False,
+        return_each_recurrence_output: bool = False,
+    ):
+        """
+        Initializes the GroupRecursiveGPT2MTPBlock.
+
+        Args:
+            gpt2_blocks (list[GPT2Block]): List of GPT2Block instances to be packed into a single recurrent block.
+            max_recurrence (int): The maximum number of recurrences.
+            k_last_recurrence_gradient_backprop (int): The number of last recurrences to backpropagate gradients through.
+                If set to -1, backpropagation is done through all recurrences. Default is -1.
+            sample_iterations (bool): Whether to sample the number of recurrences during training. Defaults to False.
+
+        Note:
+            When using GroupRecursiveGPT2MTPBlock, the input tensor is feeded to the block max_recurrence (i.e. L) times. In other words,
+            when max_recurrence=1, the GroupRecursiveGPT2MTPBlock behaves like a standard GPT2Block.
+        """
+        super().__init__()
+        self.block_type = BlockTypes.GROUP_RECURSIVE_MTP
+        self.gpt2_blocks = nn.ModuleList(gpt2_blocks)
+        self.num_blocks = len(gpt2_blocks)
+        self.max_recurrence = max_recurrence
+        self.k_last_recurrence_gradient_backprop = k_last_recurrence_gradient_backprop
+        self.sample_iterations = sample_iterations
+        self.current_recurrence = 0
+        if self.sample_iterations:
+            self.std = None
+        self.use_recurrence_embedding = use_recurrence_embedding
+        self.recurrence_embedding_base_freq = recurrence_embedding_base_freq
+        if use_recurrence_embedding:
+            self.recurrence_embd = SinusoidalRecurrenceEmbedding(n_embd, base_freq=recurrence_embedding_base_freq)
+        
+        self.penalize_recurrence_embedding_similarity = penalize_recurrence_embedding_similarity
+        if penalize_recurrence_embedding_similarity:
+            self.cos = nn.CosineSimilarity(dim=-1)
+
+        self.return_each_recurrence_output = return_each_recurrence_output # should be used only when iterating over the entire model
+
+        self.embd_norm = nn.LayerNorm(n_embd)
+        self.prev_iter_embd_norm = nn.LayerNorm(n_embd)
+        self.proj = nn.Linear(n_embd*2, n_embd)
+        # we will have at most "max_recurrence" latent thoughts which we want to learn
+        self.latent_thoughts = nn.Parameter(torch.randn(max_recurrence-1, n_embd))
+        
+
+        # self._check_max_recurrence()
+
+    def set_sampling_std(self, std: float):
+        """
+        Sets the standard deviation for sampling the number of recurrences.
+
+        Args:
+            std (float): The standard deviation to be set.
+        """
+        self.std = std * self.max_recurrence / 2
+
+
+    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
+        """
+        Forward pass of the GroupRecursiveGPT2MTPBlock.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output tensor.
+        """
+
+        def step(prev_iter_embd, embd, steps_done):
+            """One recurrence step with or without gradient tracking."""
+            if self.use_recurrence_embedding:
+                recurrence_emb = self.recurrence_embd(steps_done)
+                prev_iter_embd = prev_iter_embd + recurrence_emb
+
+            
+
+            if embd is not None and steps_done > 0:
+                prev_iter_embd = self.prev_iter_embd_norm(prev_iter_embd)
+                
+                # embd length: seq_len - step_done
+                embd = embd[:, steps_done: , :] # batch, seq_len - steps_done, embd_dim
+                # latent thought shape: steps_done, embd_dim --> batch, steps_done, embd_dim
+                batch_size = embd.size(0)
+                latent_thoughts = self.latent_thoughts[:steps_done].unsqueeze(0).repeat(batch_size, 1, 1)
+                embd = torch.cat([embd, latent_thoughts], dim=1) # seq_len - steps_done + steps_done, embd_dim
+                embd = self.embd_norm(embd)
+                
+                x = torch.cat([embd, prev_iter_embd], dim=-1)
+                x = self.proj(x)
+            else: # iter 0 when no embd is provided
+                x = prev_iter_embd
+
+            for block in self.gpt2_blocks:
+                x = block(x)
+            
+            return x
+        
+        
+        # ensure output type is the same as input type
+        type_ = x.dtype
+
+        # Determine whether to backprop through all steps
+        full_grad = (
+            self.k_last_recurrence_gradient_backprop == -1
+            or self.k_last_recurrence_gradient_backprop > self.max_recurrence
+        )
+
+        if self.sample_iterations and self.training:
+            # sample from a normal distribution
+            recurrences = self.max_recurrence + torch.normal(mean=0, std=self.std, size=(1,)).item()
+            recurrences = min(recurrences, self.max_recurrence*2)
+            recurrences = max(recurrences, 1)
+        else:
+            recurrences = self.max_recurrence
+        
+        if self.penalize_recurrence_embedding_similarity:
+            cosine_similarities = []
+            mse_similarities = []
+        
+        if self.return_each_recurrence_output:
+            all_recurrence_outputs = []
+
+        self.current_recurrence = round(recurrences)
+        for r in range(self.current_recurrence):
+            if not full_grad and r < (self.current_recurrence - self.k_last_recurrence_gradient_backprop):
+                x = x.detach()
+
+            x_before = x
+            x_after = step(
+                prev_iter_embd=x, 
+                embd=kwargs.get("tokens_repres"),
+                steps_done=torch.tensor(r, device=x.device)
+            )
+            x = x_after
+
+            if self.return_each_recurrence_output:
+                all_recurrence_outputs.append(x)
+
+
+            if self.penalize_recurrence_embedding_similarity:
+                # cosine similarity between x_before and x_after
+                cosine_similarity = (self.cos(x_before.view(x_before.size(0), -1), x_after.view(x_after.size(0), -1)) + 1.0 ) / 2.0 # shift to [0, 1]
+                cosine_similarities.append(cosine_similarity.mean())
+
+                # mse 
+                mse_similarity = nn.functional.mse_loss(x_before, x_after, reduction='mean')
+                mse_similarities.append(mse_similarity)
+
+        
+        output = {}
+        if self.return_each_recurrence_output:
+            output["recurrence_outputs"] = all_recurrence_outputs
+        
+        if self.penalize_recurrence_embedding_similarity:
+            output["cosine_similarity"] = torch.stack(cosine_similarities).mean()
+            output["mse_similarity"] = torch.stack(mse_similarities).mean()
+            
+
+        output["output"] = x.to(type_)
+
+        return output
+
 class GroupRecursiveGPT2Block(nn.Module):
     """
     GroupRecursiveGPT2Block class.
@@ -910,6 +1090,7 @@ class GroupRecursiveGPT2Block(nn.Module):
             when max_recurrence=1, the GroupRecursiveGPT2Block behaves like a standard GPT2Block.
         """
         super().__init__()
+        self.block_type = BlockTypes.GROUP_RECURSIVE
         self.gpt2_blocks = nn.ModuleList(gpt2_blocks)
         self.num_blocks = len(gpt2_blocks)
         self.max_recurrence = max_recurrence
@@ -942,7 +1123,7 @@ class GroupRecursiveGPT2Block(nn.Module):
         self.std = std * self.max_recurrence / 2
 
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
         """
         Forward pass of the GroupRecursiveGPT2Block.
 
@@ -1147,12 +1328,12 @@ class GPT2LLM(NNModel):
         self.separate_lm_head_norm = separate_lm_head_norm
         self.use_last_iteration_output_as_final = use_last_iteration_output_as_final
         if return_each_recurrence_output:
-            if len(recurrent_blocks_indices) != 1 or len(recurrent_blocks_indices[0]) != n_layer:
-                raise ValueError(
-                    "When using 'return_each_recurrence_output', "
-                    "'recurrent_blocks_indices' must be a list of lists, "
-                    "meaning that, in this case only iterating over the entire model is supported."
-                )
+            # if (len(recurrent_blocks_indices) != 1 or len(recurrent_blocks_indices[0]) != n_layer):
+            #     raise ValueError(
+            #         "When using 'return_each_recurrence_output', "
+            #         "'recurrent_blocks_indices' must be a list of lists, "
+            #         "meaning that, in this case only iterating over the entire model is supported."
+            #     )
             self.recurrence_logits_entropy_stats = {}
 
         if penalize_recurrence_embedding_similarity:
@@ -1200,6 +1381,7 @@ class GPT2LLM(NNModel):
         while n < n_layer:
             # determine block type
             block_type = self._determine_block_type(n)
+            print(f"Building block {n} of type {block_type}")
             k_last_gradient_backprop = None if block_type == BlockTypes.STANDARD else self.k_last_recurrence_gradient_backprops[recurrent_blocks_cnt]
             
             if block_type == BlockTypes.STANDARD:
@@ -1223,7 +1405,7 @@ class GPT2LLM(NNModel):
                     lns_getter=self.get_LNS_factor,
                     increment_fn=self.increment_processed_layers_cnt,
                 )
-            elif block_type == BlockTypes.GROUP_RECURSIVE:
+            elif block_type == BlockTypes.GROUP_RECURSIVE or block_type == BlockTypes.GROUP_RECURSIVE_MTP:
                 max_recurrence = self._determine_max_recurrence(block_type, recurrent_blocks_cnt)
                 num_blocks = self._determine_num_blocks_in_group(n)
                 gpt2_blocks = []
@@ -1246,7 +1428,7 @@ class GPT2LLM(NNModel):
                     )
                     gpt2_blocks.append(gpt2_block)
                 
-                block = GroupRecursiveGPT2Block(
+                block_arguments = dict(
                     gpt2_blocks=gpt2_blocks,
                     max_recurrence=max_recurrence,
                     k_last_recurrence_gradient_backprop=k_last_gradient_backprop,
@@ -1255,8 +1437,13 @@ class GPT2LLM(NNModel):
                     use_recurrence_embedding=use_recurrence_embedding,
                     recurrence_embedding_base_freq=recurrence_embedding_base_freq,
                     penalize_recurrence_embedding_similarity=penalize_recurrence_embedding_similarity,
-                    return_each_recurrence_output=return_each_recurrence_output,
+                    return_each_recurrence_output=return_each_recurrence_output
                 )
+
+                if block_type == BlockTypes.GROUP_RECURSIVE:
+                    block = GroupRecursiveGPT2Block(**block_arguments)
+                else:  # GROUP_RECURSIVE_MTP
+                    block = GroupRecursiveGPT2MTPBlock(**block_arguments)
             else:
                 raise ValueError(
                     f"Block type {block_type} not supported! "
@@ -1264,9 +1451,9 @@ class GPT2LLM(NNModel):
                 )
             blocks_list.append(block)
             self.blocks_types.append(block_type)
-            
+            self.recurrent_blocks_indices.append(len(blocks_list) - 1)
             n += num_blocks
-            if block_type == BlockTypes.RECURSIVE or block_type == BlockTypes.GROUP_RECURSIVE:
+            if block_type == BlockTypes.RECURSIVE or block_type == BlockTypes.GROUP_RECURSIVE or block_type == BlockTypes.GROUP_RECURSIVE_MTP:
                 recurrent_blocks_cnt += 1
 
         assert n == n_layer, f"Expected {n_layer} blocks, but got {n}!"
@@ -1310,15 +1497,15 @@ class GPT2LLM(NNModel):
                     raise ValueError(
                         "When using RecursiveGPT2Block, 'max_recurrences' must be provided."
                     )
-                if len(self.max_recurrences) != len(self.recursive_blocks_indices):
+                if len(self.max_recurrences) != len(self.recurrent_blocks_indices):
                     raise ValueError(
                         f"The length of max_recurrences ({len(self.max_recurrences)}) must be equal to the length of "
-                        f"recursive_blocks_indices ({len(self.recursive_blocks_indices)})."
+                        f"recurrent_blocks_indices ({len(self.recurrent_blocks_indices)})."
                     )
-                if len(self.k_last_recurrence_gradient_backprops) != len(self.recursive_blocks_indices):
+                if len(self.k_last_recurrence_gradient_backprops) != len(self.recurrent_blocks_indices):
                     raise ValueError(
                         f"The length of k_last_recurrence_gradient_backprop ({len(self.k_last_recurrence_gradient_backprops)}) must be equal to the length of "
-                        f"recursive_blocks_indices ({len(self.recursive_blocks_indices)})."
+                        f"recurrent_blocks_indices ({len(self.recurrent_blocks_indices)})."
                     )
                 for recurrence_block_index in self.recurrent_blocks_indices:
                     if recurrence_block_index >= self.n_layer or recurrence_block_index < 0:
@@ -1331,19 +1518,23 @@ class GPT2LLM(NNModel):
             return BlockTypes.RECURSIVE
         
         for group in self.recurrent_blocks_indices:
-            if isinstance(group, list) and layer_index == group[0]:
-                return BlockTypes.GROUP_RECURSIVE
+            if isinstance(group, list): 
+                if layer_index == group[0]:
+                    return BlockTypes.GROUP_RECURSIVE
+                if -layer_index == group[0]:
+                    return BlockTypes.GROUP_RECURSIVE_MTP
         
         return BlockTypes.STANDARD
     
     def _determine_num_blocks_in_group(self, layer_index: int) -> int:
         for group in self.recurrent_blocks_indices:
-            if isinstance(group, list) and layer_index == group[0]:
+            # use abs() because group[0] can be negative for GROUP_RECURSIVE_MTP
+            if isinstance(group, list) and layer_index == abs(group[0]):
                 return len(group)
         raise ValueError(f"Layer index {layer_index} is not part of any group in recurrent_blocks_indices.")
         
     def _determine_max_recurrence(self, block_type: BlockTypes, recurrent_blocks_cnt: int) -> int:
-        if block_type == BlockTypes.RECURSIVE or block_type == BlockTypes.GROUP_RECURSIVE:
+        if block_type in [BlockTypes.RECURSIVE, BlockTypes.GROUP_RECURSIVE, BlockTypes.GROUP_RECURSIVE_MTP]:
             return self.max_recurrences[recurrent_blocks_cnt]
         else:
             return 0  # not used for standard blocks, but needed to create the block
@@ -1475,20 +1666,22 @@ class GPT2LLM(NNModel):
         # TODO: use drop out also without absolute position embedding?
         h = self.transformer.drop(h) if hasattr(self.transformer, "drop") else h
 
+        tokens_repres = h # shape: (b, seq_len, n_embd)
+
         recurrence_cosine_similarities = []
         recurrence_mse_similarities = []
         for layer_idx in self.transformer.h:
-            if self.blocks_types[int(layer_idx)] == BlockTypes.GROUP_RECURSIVE:
-                block: GroupRecursiveGPT2Block = self.transformer.h[layer_idx]  # type: ignore
+            if self.blocks_types[int(layer_idx)] in [BlockTypes.GROUP_RECURSIVE, BlockTypes.GROUP_RECURSIVE_MTP]:
+                block: Union[GroupRecursiveGPT2Block, GroupRecursiveGPT2MTPBlock] = self.transformer.h[layer_idx]  # type: ignore
                 # set the std for sampling the number of recurrences based on the training steps
 
                 if self.training:# and sampling_std is not None:
                     block.set_sampling_std(sampling_std)
 
                 
-            if self.blocks_types[int(layer_idx)] == BlockTypes.GROUP_RECURSIVE:
-                block: GroupRecursiveGPT2Block = self.transformer.h[layer_idx]  # type: ignore
-                output = self.transformer.h[layer_idx](h)
+            if self.blocks_types[int(layer_idx)] in [BlockTypes.GROUP_RECURSIVE, BlockTypes.GROUP_RECURSIVE_MTP]:
+                block: Union[GroupRecursiveGPT2Block, GroupRecursiveGPT2MTPBlock] = self.transformer.h[layer_idx]  # type: ignore
+                output = block(h, tokens_repres=tokens_repres)
                 h = output["output"]
                 if self.penalize_recurrence_embedding_similarity:
                     cosine_similarity = output["cosine_similarity"]
@@ -1503,10 +1696,11 @@ class GPT2LLM(NNModel):
                 cosine_similarity = nn.functional.cosine_similarity(
                     before_h.view(before_h.size(0), -1), h.view(h.size(0), -1), dim=-1
                 ).mean()
-                mse_similarity = nn.functional.mse_loss(before_h, h, reduction='mean').mean()
+                with torch.no_grad():
+                    mse_similarity = nn.functional.mse_loss(before_h, h, reduction='mean').mean()
 
-            if self.blocks_types[int(layer_idx)] == BlockTypes.GROUP_RECURSIVE:
-                block: GroupRecursiveGPT2Block = self.transformer.h[layer_idx]  # type: ignore
+            if self.blocks_types[int(layer_idx)] in [BlockTypes.GROUP_RECURSIVE, BlockTypes.GROUP_RECURSIVE_MTP]:
+                block: Union[GroupRecursiveGPT2Block, GroupRecursiveGPT2MTPBlock] = self.transformer.h[layer_idx]  # type: ignore
                 if self.training:
                     self.record_recurrence_usage_stats(layer_idx, block)
             
