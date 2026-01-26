@@ -23,14 +23,14 @@ settings:
     enforce_last_step_evaluated: false
     enforce_last_step_checkpointed: false
   step_profile:
-    gradient_accumulation_steps: 39
+    gradient_accumulation_steps: 40
     local_train_micro_batch_size: 3
-    sequence_length: 1024
+    sequence_length: 2048
     dp_degree:
       instance_key: dp_degree
       pass_type: BY_REFERENCE
   training_target: 
-    num_target_tokens: 6872666112 #13920178176 # global_num_tokens // sequence_length // num_ranks // local_micro_batch_size // gradient_accumulation_steps
+    num_target_tokens: 6872432640 #13920178176 # global_num_tokens // sequence_length // num_ranks // local_micro_batch_size // gradient_accumulation_steps
       # component_key: number_conversion
       # variant_key: num_tokens_from_packed_mem_map_dataset_continuous
       # config:
@@ -204,7 +204,7 @@ test_dataloader:
       component_key: batch_sampler
       variant_key: default
       config:
-        batch_size: 32
+        batch_size: 8
         drop_last: true
         sampler:
           component_key: sampler
@@ -250,9 +250,10 @@ loss_fn:
     target_key: ${settings.referencing_keys.target_key}
     prediction_key: ${settings.referencing_keys.prediction_key}
     mtp_prediction_key: each_recurrence_logits
-    mtp_lambda: 1  # Initial value (will be overridden by scheduler)
-    discount_factor: 0.8
+    mtp_lambda: 1.0  # Initial value (will be overridden by scheduler)
+    discount_factor: 0.3
     perform_gradient_projection: true
+    monitor_gradient_conflicts: true
     # mtp_lambda_scheduler:
     #   instance_key: mtp_lambda_scheduler
     #   pass_type: BY_REFERENCE
@@ -382,16 +383,16 @@ model_raw:
         normalized_shape: ${model_raw.config.n_embd}
         eps: 1.0e-05
     use_weight_tying: false
-    recurrent_blocks_indices: [[0,1,2,3,4,5,6,7,8,9,10,11]]
+    recurrent_blocks_indices: [[1,2],[4,5],[7,8],[-10,-11]]
     k_last_recurrence_gradient_backprops: -1 # -1 means the gradients for all steps will be propagated
-    recurrent_blocks_max_recurrences: 3
+    recurrent_blocks_max_recurrences: 2
     sample_iterations: false
-    use_recurrence_embedding: true
+    use_recurrence_embedding: false
     recurrence_embedding_base_freq: 100.0
     use_LNS: true
     penalize_recurrence_embedding_similarity: true
     return_each_recurrence_output: true
-    separate_lm_head_norm: true
+    separate_lm_head_norm: false
     use_last_iteration_output_as_final: false
 
 lr_scheduler:
@@ -489,9 +490,10 @@ evaluation_subscriber:
   variant_key: wandb
   config:
     global_rank: ${settings.cuda_env.global_rank}
-    project: nemotron_24_effective_layers_1B_MATH
+    project: nemotron_MATH_PartialMTP
     mode: ONLINE
-    experiment_id: 257M_GradProj_MTPTD(sdl)_cap_${loss_fn.config.discount_factor}_Muon_ShortSeq${settings.step_profile.sequence_length}_OptimalWD_LR${optimizer.config.lr}_useLNS_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_sample=${model_raw.config.sample_iterations}_recurEmbed=${model_raw.config.use_recurrence_embedding}_lastBackProp=${model_raw.config.k_last_recurrence_gradient_backprops}_${settings.experiment_id}
+    experiment_id: MTPSD_LR${optimizer.config.lr}_GradProj=${loss_fn.config.perform_gradient_projection}_useLNS_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_sample=${model_raw.config.sample_iterations}_recurEmbed=${model_raw.config.use_recurrence_embedding}_${settings.experiment_id}
+    tags: [257M, Partial_MTP, 2Token, GradProj]
     directory: /raid/s3/opengptx/behzad_shomali/wandb_storage
     config_file_path: ${settings.config_file_path}
 
@@ -499,8 +501,7 @@ evaluation_subscriber:
 #   component_key: scheduler
 #   variant_key: sigmoid_mtp_lambda
 #   config:
-#     start_value: 0.5
-#     end_value: 1.0
+#     start_value: 1
+#     end_value: 0.3
 #     steepness: 20.0
-#     cap_value: 0.8
 #     total_steps: ${settings.training_target.num_target_steps}

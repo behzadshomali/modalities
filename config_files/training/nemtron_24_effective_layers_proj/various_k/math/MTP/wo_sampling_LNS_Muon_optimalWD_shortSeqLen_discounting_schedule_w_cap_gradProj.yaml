@@ -252,7 +252,7 @@ loss_fn:
     mtp_prediction_key: each_recurrence_logits
     mtp_lambda: 0.5  # Initial value (will be overridden by scheduler)
     discount_factor: 0.5
-    use_gradient_projection: true
+    perform_gradient_projection: true
     # mtp_lambda_scheduler:
     #   instance_key: mtp_lambda_scheduler
     #   pass_type: BY_REFERENCE

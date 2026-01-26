@@ -24,7 +24,7 @@ settings:
     enforce_last_step_checkpointed: false
   step_profile:
     gradient_accumulation_steps: 39
-    local_train_micro_batch_size: 3
+    local_train_micro_batch_size: 6
     sequence_length: 1024
     dp_degree:
       instance_key: dp_degree
@@ -243,19 +243,21 @@ checkpoint_saving:
         global_rank: ${settings.cuda_env.global_rank}
         experiment_id: ${settings.experiment_id}
 
+# loss_fn:
+#   component_key: loss
+#   variant_key: clm_recurrence_cosine_sim_penalty_loss
+#   config:
+#     target_key: ${settings.referencing_keys.target_key}
+#     prediction_key: ${settings.referencing_keys.prediction_key}
+#     penalty_alpha: 0
+
 loss_fn:
   component_key: loss
-  variant_key: clm_mtp_recurrence_loss_temporal_discounting
+  variant_key: clm_cross_entropy_loss
   config:
     target_key: ${settings.referencing_keys.target_key}
     prediction_key: ${settings.referencing_keys.prediction_key}
-    mtp_prediction_key: each_recurrence_logits
-    mtp_lambda: 1  # Initial value (will be overridden by scheduler)
-    discount_factor: 0.8
-    perform_gradient_projection: true
-    # mtp_lambda_scheduler:
-    #   instance_key: mtp_lambda_scheduler
-    #   pass_type: BY_REFERENCE
+
 
 device_mesh:
   component_key: device_mesh
@@ -314,8 +316,7 @@ fsdp_model:
   variant_key: fsdp2_wrapped
   config:
     model:
-      # instance_key: compiled_model
-      instance_key: model_raw
+      instance_key: compiled_model
       pass_type: BY_REFERENCE
     device_mesh:
       instance_key: device_mesh
@@ -325,14 +326,14 @@ fsdp_model:
       reduce_dtype: BF_16
     block_names: [GPT2Block]
 
-# compiled_model:
-#   component_key: model
-#   variant_key: compiled
-#   config:
-#     model:
-#       instance_key: model_raw
-#       pass_type: BY_REFERENCE
-#     block_names: [GPT2Block]
+compiled_model:
+  component_key: model
+  variant_key: compiled
+  config:
+    model:
+      instance_key: model_raw
+      pass_type: BY_REFERENCE
+    block_names: [GPT2Block]
 
 model_raw:
   component_key: model
@@ -382,17 +383,14 @@ model_raw:
         normalized_shape: ${model_raw.config.n_embd}
         eps: 1.0e-05
     use_weight_tying: false
-    recurrent_blocks_indices: [[0,1,2,3,4,5,6,7,8,9,10,11]]
+    recurrent_blocks_indices: [[2,3],[5,6],[8,9]]
     k_last_recurrence_gradient_backprops: -1 # -1 means the gradients for all steps will be propagated
-    recurrent_blocks_max_recurrences: 3
+    recurrent_blocks_max_recurrences: [3,3,3]
     sample_iterations: false
-    use_recurrence_embedding: true
-    recurrence_embedding_base_freq: 100.0
+    use_recurrence_embedding: false
     use_LNS: true
-    penalize_recurrence_embedding_similarity: true
-    return_each_recurrence_output: true
-    separate_lm_head_norm: true
-    use_last_iteration_output_as_final: false
+    penalize_recurrence_embedding_similarity: false
+    return_each_recurrence_output: false
 
 lr_scheduler:
   component_key: scheduler
@@ -491,16 +489,18 @@ evaluation_subscriber:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_24_effective_layers_1B_MATH
     mode: ONLINE
-    experiment_id: 257M_GradProj_MTPTD(sdl)_cap_${loss_fn.config.discount_factor}_Muon_ShortSeq${settings.step_profile.sequence_length}_OptimalWD_LR${optimizer.config.lr}_useLNS_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_sample=${model_raw.config.sample_iterations}_recurEmbed=${model_raw.config.use_recurrence_embedding}_lastBackProp=${model_raw.config.k_last_recurrence_gradient_backprops}_${settings.experiment_id}
+    experiment_id: 257M_ShortSeq${settings.step_profile.sequence_length}_OptimalWD_LR${optimizer.config.lr}_useLNS_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_sample=${model_raw.config.sample_iterations}_recurEmbed=${model_raw.config.use_recurrence_embedding}_lastBackProp=${model_raw.config.k_last_recurrence_gradient_backprops}_${settings.experiment_id}
     directory: /raid/s3/opengptx/behzad_shomali/wandb_storage
     config_file_path: ${settings.config_file_path}
 
-# mtp_lambda_scheduler:
-#   component_key: scheduler
-#   variant_key: sigmoid_mtp_lambda
+# mfu_calculator:
+#   component_key: mfu_calculator
+#   variant_key: gpt2
 #   config:
-#     start_value: 0.5
-#     end_value: 1.0
-#     steepness: 20.0
-#     cap_value: 0.8
-#     total_steps: ${settings.training_target.num_target_steps}
+#     n_layer: ${model_raw.config.n_layer}
+#     sequence_length: ${settings.step_profile.sequence_length}
+#     n_embd: ${model_raw.config.n_embd}
+#     world_size: ${settings.cuda_env.world_size}
+#     fsdp_model:
+#       instance_key: fsdp_model
+#       pass_type: BY_REFERENCE

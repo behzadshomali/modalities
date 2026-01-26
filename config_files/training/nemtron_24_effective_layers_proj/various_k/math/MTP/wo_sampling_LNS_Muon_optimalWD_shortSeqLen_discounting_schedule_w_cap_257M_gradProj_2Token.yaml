@@ -24,7 +24,7 @@ settings:
     enforce_last_step_checkpointed: false
   step_profile:
     gradient_accumulation_steps: 39
-    local_train_micro_batch_size: 3
+    local_train_micro_batch_size: 6
     sequence_length: 1024
     dp_degree:
       instance_key: dp_degree
@@ -204,7 +204,7 @@ test_dataloader:
       component_key: batch_sampler
       variant_key: default
       config:
-        batch_size: 32
+        batch_size: 8
         drop_last: true
         sampler:
           component_key: sampler
@@ -250,8 +250,8 @@ loss_fn:
     target_key: ${settings.referencing_keys.target_key}
     prediction_key: ${settings.referencing_keys.prediction_key}
     mtp_prediction_key: each_recurrence_logits
-    mtp_lambda: 1  # Initial value (will be overridden by scheduler)
-    discount_factor: 0.8
+    mtp_lambda: 1.0  # Initial value (will be overridden by scheduler)
+    discount_factor: 0.5
     perform_gradient_projection: true
     # mtp_lambda_scheduler:
     #   instance_key: mtp_lambda_scheduler
@@ -384,14 +384,14 @@ model_raw:
     use_weight_tying: false
     recurrent_blocks_indices: [[0,1,2,3,4,5,6,7,8,9,10,11]]
     k_last_recurrence_gradient_backprops: -1 # -1 means the gradients for all steps will be propagated
-    recurrent_blocks_max_recurrences: 3
+    recurrent_blocks_max_recurrences: 2
     sample_iterations: false
-    use_recurrence_embedding: true
+    use_recurrence_embedding: false
     recurrence_embedding_base_freq: 100.0
     use_LNS: true
     penalize_recurrence_embedding_similarity: true
     return_each_recurrence_output: true
-    separate_lm_head_norm: true
+    separate_lm_head_norm: false
     use_last_iteration_output_as_final: false
 
 lr_scheduler:
@@ -491,7 +491,7 @@ evaluation_subscriber:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_24_effective_layers_1B_MATH
     mode: ONLINE
-    experiment_id: 257M_GradProj_MTPTD(sdl)_cap_${loss_fn.config.discount_factor}_Muon_ShortSeq${settings.step_profile.sequence_length}_OptimalWD_LR${optimizer.config.lr}_useLNS_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_sample=${model_raw.config.sample_iterations}_recurEmbed=${model_raw.config.use_recurrence_embedding}_lastBackProp=${model_raw.config.k_last_recurrence_gradient_backprops}_${settings.experiment_id}
+    experiment_id: 257M_GradProj_MTP_cap_${loss_fn.config.discount_factor}_Muon_ShortSeq${settings.step_profile.sequence_length}_OptimalWD_LR${optimizer.config.lr}_useLNS_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_sample=${model_raw.config.sample_iterations}_recurEmbed=${model_raw.config.use_recurrence_embedding}_lastBackProp=${model_raw.config.k_last_recurrence_gradient_backprops}_${settings.experiment_id}
     directory: /raid/s3/opengptx/behzad_shomali/wandb_storage
     config_file_path: ${settings.config_file_path}
 
