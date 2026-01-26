@@ -116,14 +116,26 @@ class Trainer:
         main_loss: torch.Tensor,
         aux_loss_list: list[torch.Tensor],
         scaling_factor: float,
-        num_train_steps_done: int
+        num_train_steps_done: int,
+        loss_fun: Loss,
     ) -> None:
         """
         Performs PCGrad-style gradient projection for MTP losses.
         Projects auxiliary gradients onto the normal plane of the main task gradient if they conflict.
         """
-        # Helper to get all trainable parameters
-        params = [p for p in model.parameters() if p.requires_grad]
+        # Find parameters of GroupRecursiveGPT2MTPBlock
+        target_params = []
+        target_module_name = "GroupRecursiveGPT2MTPBlock"
+        for module in model.modules():
+            if module.__class__.__name__ == target_module_name:
+                target_params.extend([p for p in module.parameters() if p.requires_grad])
+        
+        # Remove duplicates
+        target_params = list(set(target_params))
+        
+        # If no target params found (fallback to all params if MTP block missing but requested)
+        if not target_params:
+            target_params = [p for p in model.parameters() if p.requires_grad]
 
         # Optimization: Use flattened vectors to avoid python loop overhead
         def _get_flat_grads(model_params):
@@ -164,20 +176,27 @@ class Trainer:
                              p.grad.add_(grad_slice)
                     offset += numel
 
-        # 1. Stash accumulated gradients from previous micro-batches (if any)
+        params = target_params
+
+        # 1. Stash accumulated gradients from previous micro-batches (if any) for target params
         stashed_grads = {p: p.grad.clone() for p in params if p.grad is not None}
         
-        # Clear grads for separate computation
-        model.zero_grad()
+        # Clear grads for target params to separate computation
+        # Note: Non-target params retain their accumulated gradients
+        for p in params:
+            p.grad = None
         
         # 2. Compute Main Task Gradient (Next Token Prediction)
+        # retain_graph=True because we need to backward for aux losses later
         (main_loss / scaling_factor).backward(retain_graph=True)
         
-        # Store main grads as flat vector
+        # Store main grads as flat vector just for target params
         main_grads_flat = _get_flat_grads(params)
         
-        model.zero_grad()
-        
+        # Clear grads for target params again
+        for p in params:
+            p.grad = None
+            
         # Initialize final_grads with main_grads
         final_grads_flat = main_grads_flat.clone()
         
@@ -189,6 +208,9 @@ class Trainer:
         total_conflicts = 0
         cosine_sims = []
         
+        monitor_conflicts = getattr(loss_fun, "monitor_gradient_conflicts", False)
+        perform_projection = getattr(loss_fun, "perform_gradient_projection", False)
+
         # 3. Process each Auxiliary Task
         for i, aux_loss in enumerate(aux_loss_list):
             (aux_loss / scaling_factor).backward(retain_graph=True)
@@ -209,33 +231,30 @@ class Trainer:
             if norm_main > 0 and norm_aux > 0:
                 cos_sim = dot_prod_global / (norm_main * norm_aux)
             else:
-                 if norm_main == 0 or norm_aux == 0:
-                     # This can happen if gradients are zero (e.g. early training or masked)
-                     # Log warning or just 0 similarity? Original code raised ValueError.
-                     # We keep original behavior for consistency but this might be strict.
-                     raise ValueError(
-                        f"Zero norm encountered. norm_main: {norm_main.item()}, norm_aux: {norm_aux.item()}"
-                    )
-                 cos_sim = torch.tensor(0.0, device=main_grads_flat.device)
+                 cos_sim = torch.tensor(-10, device=main_grads_flat.device)
 
             cosine_sims.append(cos_sim.item())
             
             # Check for conflict
             if dot_prod_global < 0:
                 total_conflicts += 1
-                # Project aux gradient
-                # g_a_proj = g_a - (dot / |g_m|^2) * g_m
-                proj_coeff = dot_prod_global / (norm_main_sq + 1e-8)
-                
-                # final += g_a - proj * g_m
-                # We can do this in place on final_grads_flat
-                # final_grads_flat += aux_grads_flat - proj_coeff * main_grads_flat
-                final_grads_flat.add_(aux_grads_flat).add_(main_grads_flat, alpha=-proj_coeff)
+                if perform_projection:
+                    # Project aux gradient
+                    # g_a_proj = g_a - (dot / |g_m|^2) * g_m
+                    proj_coeff = dot_prod_global / (norm_main_sq + 1e-8)
+                    
+                    # final += g_a - proj * g_m
+                    # We can do this in place on final_grads_flat
+                    final_grads_flat.add_(aux_grads_flat).add_(main_grads_flat, alpha=-proj_coeff)
+                else:
+                    final_grads_flat.add_(aux_grads_flat)
             else:
                 # No conflict, just add original aux gradient
                 final_grads_flat.add_(aux_grads_flat)
             
-            model.zero_grad()
+            # Clear grads for target params for next aux task
+            for p in params:
+                 p.grad = None
             
         # 4. Restore stashed grads and add the computed final_grads
         for p, g in stashed_grads.items():
@@ -243,24 +262,25 @@ class Trainer:
             
         _add_flat_grads_to_model(params, final_grads_flat)
                 
-        # 5. Log stats to WandB
-        metrics = {
-            "mtp_gradient_stats/num_conflicts": ResultItem(torch.tensor(float(total_conflicts)), decimal_places=1),
-        }
-        for i, sim in enumerate(cosine_sims):
-            metrics[f"mtp_gradient_stats/cosine_sim_head_{i}"] = ResultItem(torch.tensor(sim), decimal_places=4)
-            
-        evaluation_result = EvaluationResultBatch(
-            losses={},
-            metrics=metrics,
-            throughput_metrics={},
-            dataloader_tag="mtp_gradient_projection",
-            num_train_steps_done=num_train_steps_done,
-        )
-        self._publish_evaluation_result(
-            evaluation_result_publisher=self.evaluation_result_publisher,
-            evaluation_result=evaluation_result
-        )
+        # 5. Log stats to WandB if monitoring is enabled
+        if monitor_conflicts:
+            metrics = {
+                "mtp_gradient_stats/num_conflicts": ResultItem(torch.tensor(float(total_conflicts)), decimal_places=2),
+            }
+            for i, sim in enumerate(cosine_sims):
+                metrics[f"mtp_gradient_stats/cosine_sim_head_{i}"] = ResultItem(torch.tensor(sim), decimal_places=4)
+                
+            evaluation_result = EvaluationResultBatch(
+                losses={},
+                metrics=metrics,
+                throughput_metrics={},
+                dataloader_tag="mtp_gradient_projection",
+                num_train_steps_done=num_train_steps_done,
+            )
+            self._publish_evaluation_result(
+                evaluation_result_publisher=self.evaluation_result_publisher,
+                evaluation_result=evaluation_result
+            )
 
     def _train_batch(
         self,
@@ -331,8 +351,11 @@ class Trainer:
                 ce_loss = None
                 aux_loss = None
             
-            # Check if gradient projection is requested and available
-            if aux_loss_list is not None and getattr(loss_fun, "use_gradient_projection", False):
+            # Check if gradient projection is requested or if monitoring is requested
+            monitor_conflicts = getattr(loss_fun, "monitor_gradient_conflicts", False)
+            perform_projection = getattr(loss_fun, "perform_gradient_projection", False)
+
+            if aux_loss_list is not None and perform_projection:
                 current_steps_done = Trainer._get_num_train_steps_done(
                     micro_batch_id, self.gradient_acc_steps
                 )
@@ -341,7 +364,8 @@ class Trainer:
                     ce_loss, 
                     aux_loss_list, 
                     self.gradient_acc_steps,
-                    current_steps_done
+                    num_train_steps_done=current_steps_done,
+                    loss_fun=loss_fun
                 )
             else:
                 (loss / self.gradient_acc_steps).backward()

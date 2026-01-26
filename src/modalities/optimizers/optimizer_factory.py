@@ -8,7 +8,7 @@ from torch.distributed.fsdp import FSDPModule as FSDP2
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP1
 from torch.distributed.tensor import DTensor
-from torch.optim import Adam, AdamW, Adafactor, Optimizer, Muon
+from torch.optim import Adam, AdamW, Adafactor, Optimizer
 
 from modalities.checkpointing.checkpoint_loading import FSDP1CheckpointLoadingIF
 from modalities.exceptions import OptimizerError

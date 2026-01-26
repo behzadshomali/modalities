@@ -93,7 +93,7 @@ class CLMMTPCrossEntropyLossConfig(CLMCrossEntropyLossConfig):
     target_key: str
     prediction_key: str
     mtp_prediction_key: str = "mtp_logits"
-    use_gradient_projection: bool = False
+    perform_gradient_projection: bool = False
     mtp_lambda: float
 
 class CLMMTPCrossEntropyLossTemporalDiscountingConfig(CLMCrossEntropyLossConfig):
@@ -102,7 +102,8 @@ class CLMMTPCrossEntropyLossTemporalDiscountingConfig(CLMCrossEntropyLossConfig)
     mtp_prediction_key: str = "mtp_logits"
     mtp_lambda: float
     discount_factor: float = 0.9
-    use_gradient_projection: bool = False
+    perform_gradient_projection: bool = False
+    monitor_gradient_conflicts: bool = False
     mtp_lambda_scheduler: Optional[PydanticMTPLambdaSchedulerIFType] = None
 
 
