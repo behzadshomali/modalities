@@ -1,5 +1,10 @@
 settings:
   experiment_id: ${modalities_env:experiment_id}
+  data_dir_cc: ${oc.env:DATA_DIR_CC}
+  data_dir_math: ${oc.env:DATA_DIR_MATH}
+  checkpoint_saving_path: ${oc.env:CHECKPOINT_SAVING_PATH}
+  wandb_mode: ${oc.env:WANDB_MODE}
+  wandb_path: ${oc.env:WANDB_PATH}
   config_file_path: ${modalities_env:config_file_path}
   referencing_keys:
     sample_key: input_ids
@@ -1103,7 +1108,7 @@ evaluation_subscriber:
   config:
     global_rank: ${settings.cuda_env.global_rank}
     project: loop
-    mode: ONLINE
+    mode: ${settings.wandb_mode}
     experiment_id: mf_looped_125M_3.0_3.5_65_B_tokens_mfconfig
     directory: wandb_storage
     config_file_path: ${settings.config_file_path}

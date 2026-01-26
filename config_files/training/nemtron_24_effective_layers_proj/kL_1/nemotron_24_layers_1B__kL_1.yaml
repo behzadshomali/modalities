@@ -1,5 +1,10 @@
 settings:
   experiment_id: ${modalities_env:experiment_id}
+  data_dir_cc: ${oc.env:DATA_DIR_CC}
+  data_dir_math: ${oc.env:DATA_DIR_MATH}
+  checkpoint_saving_path: ${oc.env:CHECKPOINT_SAVING_PATH}
+  wandb_mode: ${oc.env:WANDB_MODE}
+  wandb_path: ${oc.env:WANDB_PATH}
   config_file_path: ${modalities_env:config_file_path}
   referencing_keys:
     sample_key: input_ids
@@ -10,9 +15,9 @@ settings:
     global_rank: ${cuda_env:RANK}
     world_size: ${cuda_env:WORLD_SIZE}
   paths:
-    checkpoint_saving_path: /raid/s3/opengptx/behzad_shomali/checkpoints
-    # train_dataset_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part1.pbin
-    # test_dataset_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part19.pbin
+    checkpoint_saving_path: ${settings.checkpoint_saving_path}
+    # train_dataset_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part1.pbin
+    # test_dataset_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part19.pbin
   intervals:
     training_log_interval_in_steps: 1000
     checkpointing_interval_in_steps: 1000000 # 4 checkpoints
@@ -74,103 +79,103 @@ train_dataset:
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part1.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part1.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part2.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part2.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part3.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part3.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part4.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part4.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part5.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part5.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part6.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part6.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part7.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part7.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part8.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part8.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part9.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part9.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part10.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part10.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part11.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part11.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part12.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part12.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part13.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part13.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part14.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part14.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part15.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part15.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part16.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part16.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part17.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part17.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
@@ -178,119 +183,119 @@ train_dataset:
     # - component_key: dataset
     #   variant_key: packed_mem_map_dataset_continuous
     #   config:
-    #     raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_3.pbin
+    #     raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_3.pbin
     #     sequence_length: ${settings.step_profile.sequence_length}
     #     sample_key:  ${settings.referencing_keys.sample_key}
 
     # - component_key: dataset
     #   variant_key: packed_mem_map_dataset_continuous
     #   config:
-    #     raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_4.pbin
+    #     raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_4.pbin
     #     sequence_length: ${settings.step_profile.sequence_length}
     #     sample_key:  ${settings.referencing_keys.sample_key}
 
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_5.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_5.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_6.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_6.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_7.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_7.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_8.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_8.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_9.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_9.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_10.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_10.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_11.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_11.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_12.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_12.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_13.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_13.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_14.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_14.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_15.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_15.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_16.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_16.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_17.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_17.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_18.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_18.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_19.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_19.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
@@ -337,26 +342,26 @@ test_dataset:
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part18_eval.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part18_eval.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part19_eval.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part19_eval.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_23_eval.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_23_eval.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_24_eval.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_24_eval.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
@@ -612,7 +617,7 @@ evaluation_subscriber:
   config:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_24_effective_layers_1B_TUD
-    mode: ONLINE
+    mode: ${settings.wandb_mode}
     experiment_id: base24_${settings.experiment_id}
-    directory: /raid/s3/opengptx/behzad_shomali/wandb_storage
+    directory: ${settings.wandb_path}
     config_file_path: ${settings.config_file_path}

@@ -50,6 +50,11 @@ settings:
   device: 4
   model_path: /raid/s3/opengptx/behzad_shomali/teuken_3.7T_checkpoint/eid_2025-04-29__13-48-21_fed2a6d3-model-seen_steps_445500-seen_tokens_3737124864000-target_steps_447337-target_tokens_3752534736896.bin
   # experiment_id: ${modalities_env:experiment_id}
+  data_dir_cc: ${oc.env:DATA_DIR_CC}
+  data_dir_math: ${oc.env:DATA_DIR_MATH}
+  checkpoint_saving_path: ${oc.env:CHECKPOINT_SAVING_PATH}
+  wandb_mode: ${oc.env:WANDB_MODE}
+  wandb_path: ${oc.env:WANDB_PATH}
   config_file_path: ${modalities_env:config_file_path}
   referencing_keys:
     sample_key: input_ids

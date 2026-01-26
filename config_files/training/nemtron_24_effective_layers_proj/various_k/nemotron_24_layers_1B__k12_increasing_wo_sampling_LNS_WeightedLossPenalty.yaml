@@ -1,5 +1,10 @@
 settings:
   experiment_id: ${modalities_env:experiment_id}
+  data_dir_cc: ${oc.env:DATA_DIR_CC}
+  data_dir_math: ${oc.env:DATA_DIR_MATH}
+  checkpoint_saving_path: ${oc.env:CHECKPOINT_SAVING_PATH}
+  wandb_mode: ${oc.env:WANDB_MODE}
+  wandb_path: ${oc.env:WANDB_PATH}
   config_file_path: ${modalities_env:config_file_path}
   referencing_keys:
     sample_key: input_ids
@@ -10,9 +15,9 @@ settings:
     global_rank: ${cuda_env:RANK}
     world_size: ${cuda_env:WORLD_SIZE}
   paths:
-    checkpoint_saving_path: /raid/s3/opengptx/behzad_shomali/checkpoints
-    train_dataset_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_24_eval.pbin
-    # test_dataset_path: /raid/s3/opengptx/behzad_shomali/data/nvidia___nemotron-cc-math-v1_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-Math-v1_train_4plus_part19.pbin
+    checkpoint_saving_path: ${settings.checkpoint_saving_path}
+    train_dataset_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_24_eval.pbin
+    # test_dataset_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part19.pbin
   intervals:
     training_log_interval_in_steps: 10
     checkpointing_interval_in_steps: 5374 # 4 checkpoints
@@ -74,7 +79,7 @@ train_dataset:
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_24_eval.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_24_eval.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
@@ -120,7 +125,7 @@ test_dataset:
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: /raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/mem_map_gpt2/nemtron_24_effective_layers_proj/Nemotron-CC-highQuality-sampled_data_part_23_part_00_SMALL_EVAL.pbin
+        raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_23_part_00_SMALL_EVAL.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
 
@@ -402,9 +407,9 @@ evaluation_subscriber:
   config:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_24_effective_layers_1B_std_scheduler
-    mode: ONLINE
+    mode: ${settings.wandb_mode}
     experiment_id: WeightedLoss_useLNS_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_sample=${model_raw.config.sample_iterations}_recurEmbed=${model_raw.config.use_recurrence_embedding}_lastBackProp=${model_raw.config.k_last_recurrence_gradient_backprops}_${settings.experiment_id}
-    directory: /raid/s3/opengptx/behzad_shomali/wandb_storage
+    directory: ${settings.wandb_path}
     config_file_path: ${settings.config_file_path}
 
 # mfu_calculator:
