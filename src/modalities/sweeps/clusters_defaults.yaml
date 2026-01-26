@@ -1,0 +1,53 @@
+clusters:
+  - name: booster
+    sbatch_args:   &booster
+      job_name: "default_job_name"
+      partition: "booster"
+      nodes: 1
+      account: "trustllm-eu"
+      output: "sbatch_logs/output_%A_%a.out.log"
+      error: "sbatch_logs/error_%A_%a.err.log"
+      gpus_per_node: 4
+      cpus_per_task: 40
+      ntasks_per_node: 1
+    modules: ["CUDA/12", "GCCcore/.13.3.0", "Ninja-Python/1.11.1.1", "git"]
+
+  - name: develbooster
+    sbatch_args:
+      <<: *booster
+      partition: "develbooster"
+    modules: ["CUDA/12", "GCCcore/.13.3.0", "Ninja-Python/1.11.1.1", "git"]
+
+  - name: capella
+    sbatch_args:
+      job_name: "default_job_name"
+      nodes: 1
+      account: "p_gptx"
+      output: "sbatch_logs/output_%A_%a.out.log"
+      error: "sbatch_logs/error_%A_%a.err.log"
+      partition: "alpha"
+      gpus_per_node: 1
+      cpus_per_task: 20
+      ntasks_per_node: 1
+    modules: ["release/25.06", "Anaconda3/2025.06-1"]
+
+  - name: leonardo
+    sbatch_args:
+      job_name: "default_job_name"
+      nodes: 1
+      gpus_per_node: 1
+# | Partition                  | QOS               | #Cores/#GPU per job               | Walltime   | Max Nodes/Cores/GPUs/user                             | Priority |
+# | :------------------------- | :---------------- | :-------------------------------- | :--------- | :---------------------------------------------------- | :------- |
+# | boost_usr_prod             | normal            | 64 nodes                          | 24:00:00   |                                                       | 40       |
+# | boost_usr_prod             | boost_qos_dbg     | 2 nodes                           | 00:30:00   | 2 nodes / 64 cores / 8 GPUs                           | 80       |
+# | boost_usr_prod             | boost_qos_bprod   | min = 65 nodes, max = 256 nodes   | 24:00:00   | 256 nodes                                             | 60       |
+# | boost_usr_prod             | boost_qos_lprod   | 3 nodes                           | 4-00:00:00 | 3 nodes / 12 GPUs                                     | 40       |
+      qos: boost_qos_dbg
+      partition: boost_usr_prod
+      account: EUHPC_E05_119
+      output: "sbatch_logs/output_%A_%a.out.log"
+      error: "sbatch_logs/error_%A_%a.err.log"
+      ntasks_per_node: 1
+    modules: ["python/3.11.7", "cuda/12.2", "ninja/1.11.1", "gcc/12.2.0", "cmake/3.27.9", "cudnn/8.9.7.29-12--gcc--12.2.0-cuda-12.2"]
+
+# module load python/3.11.7 cuda/12.2 ninja/1.11.1 gcc/12.2.0

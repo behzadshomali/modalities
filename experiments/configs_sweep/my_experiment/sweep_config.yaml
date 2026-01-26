@@ -1,0 +1,74 @@
+base_config_file_path: /raid/s3/opengptx/behzad_shomali/modalities/config_files/training/nemtron_24_effective_layers_proj/various_k/math/partial_MTP/discounting_schedule_w_cap_257M_gradProj_4Token_woProj.yaml
+cluster:
+  name: capella
+  defaults_config_path: /raid/s3/opengptx/behzad_shomali/modalities/src/modalities/sweeps/clusters_defaults.yaml
+  sbatch_args:
+    job_name: ${var:exp_name}
+    gpus_per_node: 4
+    time: "20:00:00"
+    nodes: 8
+    mem: 0
+    ntasks_per_node: 32
+    qos: normal # boost_qos_dbg, normal
+sweep:
+  experiment_name: ${var:exp_dir}/runs/run
+  model_raw:
+    component_key: model
+    variant_key: gpt2
+    config:
+      use_meta_device: false
+      sample_key: ${settings.referencing_keys.sample_key}
+      poe_type: NOPE
+      sequence_length: ${settings.step_profile.sequence_length}
+      prediction_key: ${loss_fn.config.prediction_key}
+      vocab_size: 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
+      n_layer: 12
+      n_head_q: 32
+      n_head_kv: 32
+      ffn_hidden: 4096
+      n_embd: 1024
+      dropout: 0.0
+      bias: false
+      attention_config:
+        qkv_transforms:
+          - type_hint: RotaryTransform
+            config:
+              n_embd: ${model_raw.config.n_embd}
+              n_head: ${model_raw.config.n_head_q} #it has to be head_q here
+              seq_length_dim: -2
+              base_freq: 10000
+        qk_norm_config:
+          norm_type: pytorch_rms_norm
+          config:
+            normalized_shape: 32 # n_embd / n_head
+            eps: 1.0e-05
+      attention_implementation: pytorch_flash
+      activation_type: swiglu
+      attention_norm_config:
+        norm_type: pytorch_rms_norm
+        config:
+          normalized_shape: ${model_raw.config.n_embd}
+          eps: 1.0e-05
+      ffn_norm_config:
+        norm_type: pytorch_rms_norm
+        config:
+          normalized_shape: ${model_raw.config.n_embd}
+          eps: 1.0e-05
+      lm_head_norm_config:
+        norm_type: pytorch_rms_norm
+        config:
+          normalized_shape: ${model_raw.config.n_embd}
+          eps: 1.0e-05
+      use_weight_tying: false
+      recurrent_blocks_indices: [[[-10,-11]],[[1,2]]]
+      k_last_recurrence_gradient_backprops: -1 # -1 means the gradients for all steps will be propagated
+      recurrent_blocks_max_recurrences: 4
+      sample_iterations: false
+      use_recurrence_embedding: false
+      recurrence_embedding_base_freq: [100.0, 200.0]
+      use_LNS: true
+      penalize_recurrence_embedding_similarity: true
+      return_each_recurrence_output: true
+      separate_lm_head_norm: false
+      use_last_iteration_output_as_final: false
+paired: [[model_raw.config.recurrence_embedding_base_freq, model_raw.config.recurrent_blocks_indices]]
