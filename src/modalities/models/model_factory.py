@@ -3,7 +3,7 @@ import json
 from dataclasses import asdict, dataclass
 from functools import partial
 from pathlib import Path
-from typing import Optional, Set, Union
+from typing import List, Optional, Set, Union
 
 import torch
 import torch.distributed as dist
@@ -589,6 +589,10 @@ class GPT2ModelFactory:
         return_each_recurrence_output: bool = False,
         separate_lm_head_norm: bool = False,
         use_last_iteration_output_as_final: bool = True,
+        use_combined_representation: bool = False,
+        halt_threshold: Optional[float] = None,
+        lambda_ponder: Optional[float] = None,
+        gates_bias: Optional[List[float]] = None,
     ) -> GPT2LLM:
         config = dict(
             sample_key=sample_key,
@@ -623,6 +627,10 @@ class GPT2ModelFactory:
             return_each_recurrence_output=return_each_recurrence_output,
             separate_lm_head_norm=separate_lm_head_norm,
             use_last_iteration_output_as_final=use_last_iteration_output_as_final,
+            use_combined_representation=use_combined_representation,
+            halt_threshold=halt_threshold,
+            lambda_ponder=lambda_ponder,
+            gates_bias=gates_bias
         )
         if use_meta_device and use_weight_tying:
             raise ValueError(

@@ -106,6 +106,17 @@ class CLMMTPCrossEntropyLossTemporalDiscountingConfig(CLMCrossEntropyLossConfig)
     monitor_gradient_conflicts: bool = False
     mtp_lambda_scheduler: Optional[PydanticMTPLambdaSchedulerIFType] = None
 
+class MTPCrossEntropyLossTemporalDiscountingPonderConfig(CLMCrossEntropyLossConfig):
+    target_key: str
+    prediction_key: str
+    mtp_prediction_key: str = "mtp_logits"
+    mtp_lambda: float
+    discount_factor: float = 0.9
+    mtp_lambda_scheduler: Optional[PydanticMTPLambdaSchedulerIFType] = None
+    efficiency_lambda_scheduler: Optional[PydanticMTPLambdaSchedulerIFType] = None
+    ponder_weight: float = 0.01
+    mixed_gate_loss: bool = False
+
 
 # Checkpointing
 class SaveEveryKStepsCheckpointingStrategyConfig(BaseModel):
@@ -297,6 +308,8 @@ class SigmoidMTPLambdaSchedulerConfig(BaseModel):
     total_steps: Annotated[int, Field(strict=True, gt=0)]
     steepness: Annotated[float, Field(strict=True, gt=0.0)] = 20.0
     cap_value: Optional[Annotated[float, Field(strict=True, ge=0.0)]] = None
+    training_start_portion: float = 0.0
+    training_end_portion: float = 1.0
 
 
 class FSDP1CheckpointedOptimizerConfig(BaseModel):

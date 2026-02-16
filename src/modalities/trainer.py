@@ -356,17 +356,18 @@ class Trainer:
             perform_projection = getattr(loss_fun, "perform_gradient_projection", False)
 
             if aux_loss_list is not None and perform_projection:
-                current_steps_done = Trainer._get_num_train_steps_done(
-                    micro_batch_id, self.gradient_acc_steps
-                )
-                self._perform_gradient_projection(
-                    model, 
-                    ce_loss, 
-                    aux_loss_list, 
-                    self.gradient_acc_steps,
-                    num_train_steps_done=current_steps_done,
-                    loss_fun=loss_fun
-                )
+                raise NotImplementedError("Gradient projection implementation should be reconsidered")
+                # current_steps_done = Trainer._get_num_train_steps_done(
+                #     micro_batch_id, self.gradient_acc_steps
+                # )
+                # self._perform_gradient_projection(
+                #     model, 
+                #     ce_loss, 
+                #     aux_loss_list, 
+                #     self.gradient_acc_steps,
+                #     num_train_steps_done=current_steps_done,
+                #     loss_fun=loss_fun
+                # )
             else:
                 (loss / self.gradient_acc_steps).backward()
 
@@ -378,6 +379,8 @@ class Trainer:
             # Step the mtp_lambda_scheduler if the loss function has one
             if hasattr(loss_fun, 'mtp_lambda_scheduler') and loss_fun.mtp_lambda_scheduler is not None:
                 loss_fun.mtp_lambda_scheduler.step()
+            if hasattr(loss_fun, 'efficiency_lambda_scheduler') and loss_fun.efficiency_lambda_scheduler is not None:
+                loss_fun.efficiency_lambda_scheduler.step()
             optimizer.zero_grad()
             step_performed = True
         else:
@@ -390,7 +393,7 @@ class Trainer:
 
         self._track_recurrences_on_wandb(model, self.evaluation_result_publisher, num_train_steps_done, current_std)
 
-        return step_performed, num_train_steps_done, loss, gradient_norm_score, ce_loss, aux_loss
+        return step_performed, num_train_steps_done, loss, gradient_norm_score, ce_loss, aux_loss, aux_loss_list
 
     def train(
         self,
@@ -427,6 +430,7 @@ class Trainer:
         cumulated_losses = self._reset_tracked_losses()
         cumulated_losses_ce = self._reset_tracked_losses()
         cumulated_losses_aux = self._reset_tracked_losses()
+        cumulated_losses_aux2 = self._reset_tracked_losses()
 
         # throughput
         thoughput_aggregator = Aggregator[ThroughputAggregationKeys]()
@@ -463,7 +467,8 @@ class Trainer:
                 batch_loss,
                 gradient_norm_score,
                 ce_loss, 
-                aux_loss
+                aux_loss,
+                aux_loss2, # or ponder loss if using the temporal discounting ponder loss
             ) = self._train_batch(
                 batch=batch,
                 model=model,
@@ -487,9 +492,11 @@ class Trainer:
 
                 if ce_loss is not None and aux_loss is not None:
                     cumulated_losses_ce[0] += ce_loss.item()
-                    cumulated_losses_aux[0] += aux_loss.item()
+                    cumulated_losses_aux[0] += aux_loss.item() if isinstance(aux_loss, torch.Tensor) else aux_loss
+                    cumulated_losses_aux2[0] += aux_loss2.item() if aux_loss2 is not None else -10.0
                     cumulated_losses_ce[-1] += 1
                     cumulated_losses_aux[-1] += 1
+                    cumulated_losses_aux2[-1] += 1
 
             # gradient norm is already synced across all ranks
             if gradient_norm_score is not None:
@@ -525,7 +532,10 @@ class Trainer:
 
                 cumulated_losses[1] = batch_loss.item() if batch_loss is not None else 0.0
                 cumulated_losses_ce[1] = ce_loss.item() if ce_loss is not None else 0.0
-                cumulated_losses_aux[1] = aux_loss.item() if aux_loss is not None else 0.0
+                
+                aux_loss_value = aux_loss.item() if isinstance(aux_loss, torch.Tensor) else aux_loss
+                cumulated_losses_aux[1] = aux_loss_value if aux_loss is not None else 0.0
+                cumulated_losses_aux2[1] = aux_loss2.item() if aux_loss2 is not None else -10.0
 
                 reduced_losses = Reducer.reduce(
                     tensor=cumulated_losses,
@@ -555,6 +565,15 @@ class Trainer:
                         [t[0] / t[-1], t[1] / dist.get_world_size() * self.pp_degree]
                     ),
                 )
+                reduced_losses_aux2 = Reducer.reduce(
+                    tensor=cumulated_losses_aux2,
+                    operation=dist.ReduceOp.SUM,
+                    # 1.) summed batch loss / (num batches * (world size / dp_degree))
+                    # 2.) last batch loss / (world size / pp_degree)
+                    post_processing_fun=lambda t: torch.stack(
+                        [t[0] / t[-1], t[1] / dist.get_world_size() * self.pp_degree]
+                    ),
+                )
                 losses = {
                     "train loss avg": ResultItem(reduced_losses[0], decimal_places=2),
                     "train loss last": ResultItem(reduced_losses[1], decimal_places=2),
@@ -575,6 +594,10 @@ class Trainer:
                 if hasattr(loss_fun, 'mtp_lambda_scheduler') and loss_fun.mtp_lambda_scheduler is not None:
                     metrics["mtp_lambda"] = ResultItem(
                         torch.tensor(loss_fun.mtp_lambda_scheduler.mtp_lambda), decimal_places=4
+                    )
+                if hasattr(loss_fun, 'efficiency_lambda_scheduler') and loss_fun.efficiency_lambda_scheduler is not None:
+                    metrics["efficiency_lambda"] = ResultItem(
+                        torch.tensor(loss_fun.efficiency_lambda_scheduler.mtp_lambda), decimal_places=4
                     )
                 
                 gradient_norm_scores = []
@@ -617,6 +640,7 @@ class Trainer:
 
                 cumulated_losses_ce = self._reset_tracked_losses()
                 cumulated_losses_aux = self._reset_tracked_losses()
+                cumulated_losses_aux2 = self._reset_tracked_losses()
                 cumulated_losses = self._reset_tracked_losses()
             if step_performed:
                 evaluation_callback(num_train_steps_done=training_progress.num_seen_steps_total)
@@ -722,6 +746,78 @@ class Trainer:
                         evaluation_result=metrics,
                     )
                 model.recurrence_logits_entropy_stats = {}
+
+            if hasattr(model, "halt_value_stats"):
+                halt_value_stats = model.halt_value_stats
+                for iter_idx, halt_vals in halt_value_stats.items():
+                    avg_halt_signal =  torch.mean(halt_vals[0])
+                    metrics = EvaluationResultBatch(
+                        losses={},
+                        metrics={
+                            f"halt_stats/avg_halt_signal_iter_{iter_idx}": ResultItem(
+                                avg_halt_signal.detach().clone() if isinstance(avg_halt_signal, torch.Tensor) else torch.tensor(avg_halt_signal),
+                                decimal_places=4
+                            ),                            
+                        },
+                        throughput_metrics={},
+                        dataloader_tag="halt_stats",
+                        num_train_steps_done=num_train_steps_done,
+                    )
+                    self._publish_evaluation_result(
+                        evaluation_result_publisher=evaluation_result_publisher,
+                        evaluation_result=metrics,
+                    )
+                model.halt_value_stats = {}
+
+            if hasattr(model, "gate_stats"):
+                gate_stats = model.gate_stats
+                for gate_key, layer_stats in gate_stats.items():
+                    metrics_dict = {}
+                    for layer_idx, iter_stats in layer_stats.items():
+                         for iter_idx, gate_vals in iter_stats.items():
+                             if len(gate_vals) > 0:
+                                avg_gate_val = sum(gate_vals) / len(gate_vals)
+                                metrics_dict[f"gate_stats/{gate_key}_layer_{layer_idx}_iter_{iter_idx}"] = ResultItem(
+                                    torch.tensor(avg_gate_val), decimal_places=4
+                                )
+                    if metrics_dict:
+                        metrics = EvaluationResultBatch(
+                            losses={},
+                            metrics=metrics_dict,
+                            throughput_metrics={},
+                            dataloader_tag="gate_stats",
+                            num_train_steps_done=num_train_steps_done,
+                        )
+                        self._publish_evaluation_result(
+                            evaluation_result_publisher=evaluation_result_publisher,
+                            evaluation_result=metrics,
+                        )
+                model.gate_stats = {}
+            
+            if hasattr(model, "gate_normalized_stats"):
+                gate_normalized_stats = model.gate_normalized_stats
+                for gate_key, layer_stats in gate_normalized_stats.items():
+                    metrics_dict = {}
+                    for layer_idx, iter_stats in layer_stats.items():
+                         for iter_idx, gate_vals in iter_stats.items():
+                             if len(gate_vals) > 0:
+                                avg_gate_val = sum(gate_vals) / len(gate_vals)
+                                metrics_dict[f"gate_stats/normalized_{gate_key}_layer_{layer_idx}_iter_{iter_idx}"] = ResultItem(
+                                    torch.tensor(avg_gate_val), decimal_places=4
+                                )
+                    if metrics_dict:
+                        metrics = EvaluationResultBatch(
+                            losses={},
+                            metrics=metrics_dict,
+                            throughput_metrics={},
+                            dataloader_tag="gate_normalized_stats",
+                            num_train_steps_done=num_train_steps_done,
+                        )
+                        self._publish_evaluation_result(
+                            evaluation_result_publisher=evaluation_result_publisher,
+                            evaluation_result=metrics,
+                        )
+                model.gate_normalized_stats = {}
 
         
 

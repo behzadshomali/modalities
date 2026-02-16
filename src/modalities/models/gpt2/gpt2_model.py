@@ -2,7 +2,7 @@ import logging
 import math
 from abc import abstractmethod
 from enum import Enum
-from typing import Annotated, Callable, Mapping, Optional, Any, overload, Union
+from typing import Annotated, Callable, List, Mapping, Optional, Any, overload, Union
 
 import torch
 import torch.distributed as dist
@@ -78,6 +78,8 @@ class BlockTypes(str, Enum):
     RECURSIVE = "RECURSIVE"
     GROUP_RECURSIVE_MTP = "GROUP_RECURSIVE_MTP"
     GROUP_RECURSIVE = "GROUP_RECURSIVE"
+    COMBINED_REPRESENTATION = "COMBINED_REPRESENTATION"
+    HALT = "HALT"
 
 
 class QueryKeyValueTransform(nn.Module):
@@ -395,6 +397,10 @@ class GPT2LLMConfig(BaseModel):
     return_each_recurrence_output: bool = False
     separate_lm_head_norm: bool = False
     use_last_iteration_output_as_final: bool = True
+    use_combined_representation: bool = False
+    halt_threshold: Optional[float] = None
+    lambda_ponder: float = 0.2
+    gates_bias: Optional[List[float]] = None
 
     @model_validator(mode="after")
     def check_divisibility(self) -> "GPT2LLMConfig":
@@ -897,6 +903,10 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         recurrence_embedding_base_freq: float = 10000.0,
         penalize_recurrence_embedding_similarity: bool = False,
         return_each_recurrence_output: bool = False,
+        use_combined_representation: bool = False,
+        halt_threshold: Optional[float] = None,
+        lambda_ponder: float = 0.2,
+        gates_bias: Optional[List[float]] = None,
     ):
         """
         Initializes the GroupRecursiveGPT2MTPBlock.
@@ -907,7 +917,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             k_last_recurrence_gradient_backprop (int): The number of last recurrences to backpropagate gradients through.
                 If set to -1, backpropagation is done through all recurrences. Default is -1.
             sample_iterations (bool): Whether to sample the number of recurrences during training. Defaults to False.
-
+            gates_bias (Optional[List[float]]): Optional list of biases for the gates. Defaults to None.
         Note:
             When using GroupRecursiveGPT2MTPBlock, the input tensor is feeded to the block max_recurrence (i.e. L) times. In other words,
             when max_recurrence=1, the GroupRecursiveGPT2MTPBlock behaves like a standard GPT2Block.
@@ -932,12 +942,29 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             self.cos = nn.CosineSimilarity(dim=-1)
 
         self.return_each_recurrence_output = return_each_recurrence_output # should be used only when iterating over the entire model
-
         self.embd_norm = nn.LayerNorm(n_embd)
-        self.prev_iter_embd_norm = nn.LayerNorm(n_embd)
-        self.proj = nn.Linear(n_embd*2, n_embd)
+        if self.use_recurrence_embedding:
+            self.proj = nn.Linear(n_embd*2 + 1, n_embd)
+            self.prev_iter_embd_norm = nn.LayerNorm(n_embd+1)
+        else:
+            self.proj = nn.Linear(n_embd*2, n_embd)
+            self.prev_iter_embd_norm = nn.LayerNorm(n_embd)
+
+        self.use_combined_representation = use_combined_representation
+        self.halt_threshold = halt_threshold
+        if self.use_combined_representation:
+            self.combined_representation_block = CombinedRepresentationGPT2Block(
+                n_embd=n_embd, 
+                num_representations_max=self.max_recurrence,
+                gates_bias=gates_bias
+            )
+            self.halt_block = HaltGPT2Block(n_embd=n_embd)
+            
         # we will have at most "max_recurrence" latent thoughts which we want to learn
         self.latent_thoughts = nn.Parameter(torch.randn(max_recurrence-1, n_embd))
+        self.latent_thoughts.data.normal_(mean=0.0, std=0.02) # initialize the latent thoughts similar to the rest of the model parameters
+
+        self.lambda_ponder = lambda_ponder
         
 
         # self._check_max_recurrence()
@@ -951,46 +978,74 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         """
         self.std = std * self.max_recurrence / 2
 
+    def _recurrence_step(self, prev_iter_embd, embd, steps_done):
+        """One recurrence step with or without gradient tracking."""
+        if self.use_recurrence_embedding:
+            normalized_steps_done = steps_done / self.max_recurrence
+            steps_feature = normalized_steps_done.view(1, 1, 1).expand(
+                prev_iter_embd.size(0),
+                prev_iter_embd.size(1),
+                1,
+            )
+            prev_iter_embd = torch.cat([steps_feature, prev_iter_embd], dim=-1).to(prev_iter_embd.dtype)
 
-    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
+        # if embd is not None:# and steps_done > 0: let's copy the input for the first iteration as well, so that the model can decide whether to use it or not
+        prev_iter_embd = self.prev_iter_embd_norm(prev_iter_embd)
+        
+        # embd length: seq_len - step_done
+        embd = embd[:, steps_done: , :] # batch, seq_len - steps_done, embd_dim
+        # latent thought shape: steps_done, embd_dim --> batch, steps_done, embd_dim
+        batch_size = embd.size(0)
+        latent_thoughts = self.latent_thoughts[:steps_done].unsqueeze(0).repeat(batch_size, 1, 1)
+        embd = torch.cat([embd, latent_thoughts], dim=1).to(prev_iter_embd.dtype) # seq_len - steps_done + steps_done, embd_dim
+        embd = self.embd_norm(embd)
+        
+        x = torch.cat([embd, prev_iter_embd], dim=-1).to(prev_iter_embd.dtype)
+        x = self.proj(x)
+        # else: # iter 0 when no embd is provided
+        #     x = prev_iter_embd
+
+        for block in self.gpt2_blocks:
+            x = block(x)
+        
+        return x
+
+    def forward(
+        self, 
+        x: torch.Tensor, 
+        recurrence_step: Optional[int] = None, 
+        recurrence_outputs: Optional[list[torch.Tensor]] = None,
+        **kwargs
+    ) -> torch.Tensor:
         """
         Forward pass of the GroupRecursiveGPT2MTPBlock.
 
         Args:
             x (torch.Tensor): Input tensor.
+            recurrence_step (optional, int): If provided, only this recurrence step is executed.
+            recurrence_outputs (optional, list[torch.Tensor]): List of outputs from previous recurrence steps.
 
         Returns:
             torch.Tensor: Output tensor.
         """
 
-        def step(prev_iter_embd, embd, steps_done):
-            """One recurrence step with or without gradient tracking."""
-            if self.use_recurrence_embedding:
-                recurrence_emb = self.recurrence_embd(steps_done)
-                prev_iter_embd = prev_iter_embd + recurrence_emb
+        # If recurrence_step is provided, run only one step
+        # if recurrence_step is not None:
+        #      x_after = self._recurrence_step(
+        #         prev_iter_embd=x, 
+        #         embd=kwargs.get("tokens_repres"),
+        #         steps_done=torch.tensor(recurrence_step, device=x.device)
+        #     )
+             
+        #      output = {"output": x_after}
+        #      if self.return_each_recurrence_output:
+        #          if recurrence_outputs is not None:
+        #              recurrence_outputs.append(x_after)
+        #          else:
+        #              recurrence_outputs = [x_after]
+        #          output["recurrence_outputs"] = recurrence_outputs
 
-            
-
-            if embd is not None and steps_done > 0:
-                prev_iter_embd = self.prev_iter_embd_norm(prev_iter_embd)
-                
-                # embd length: seq_len - step_done
-                embd = embd[:, steps_done: , :] # batch, seq_len - steps_done, embd_dim
-                # latent thought shape: steps_done, embd_dim --> batch, steps_done, embd_dim
-                batch_size = embd.size(0)
-                latent_thoughts = self.latent_thoughts[:steps_done].unsqueeze(0).repeat(batch_size, 1, 1)
-                embd = torch.cat([embd, latent_thoughts], dim=1) # seq_len - steps_done + steps_done, embd_dim
-                embd = self.embd_norm(embd)
-                
-                x = torch.cat([embd, prev_iter_embd], dim=-1)
-                x = self.proj(x)
-            else: # iter 0 when no embd is provided
-                x = prev_iter_embd
-
-            for block in self.gpt2_blocks:
-                x = block(x)
-            
-            return x
+        #      return output
         
         
         # ensure output type is the same as input type
@@ -1018,12 +1073,20 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             all_recurrence_outputs = []
 
         self.current_recurrence = round(recurrences)
+        output = {}
+        combined_output = None
+        output['halt_signal'] = {r: 1 for r in range(self.current_recurrence)}
+        ponder_regularization_losses = []
+        batch_size = x.size(0)
+        seq_len = x.size(1)
+        unhalted_prob = torch.ones(batch_size, seq_len, device=x.device)
+        p_n_list = []
         for r in range(self.current_recurrence):
             if not full_grad and r < (self.current_recurrence - self.k_last_recurrence_gradient_backprop):
                 x = x.detach()
 
             x_before = x
-            x_after = step(
+            x_after = self._recurrence_step(
                 prev_iter_embd=x, 
                 embd=kwargs.get("tokens_repres"),
                 steps_done=torch.tensor(r, device=x.device)
@@ -1032,7 +1095,6 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
 
             if self.return_each_recurrence_output:
                 all_recurrence_outputs.append(x)
-
 
             if self.penalize_recurrence_embedding_similarity:
                 # cosine similarity between x_before and x_after
@@ -1043,19 +1105,151 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
                 mse_similarity = nn.functional.mse_loss(x_before, x_after, reduction='mean')
                 mse_similarities.append(mse_similarity)
 
+            if self.use_combined_representation:
+                ponder_h = torch.zeros_like(x)
+                gates = {} 
+                
+                output['recurrence_outputs'] = all_recurrence_outputs
+                combined_output = self.combined_representation_block(
+                    output, 
+                    combined_output
+                )
+                
+
+                # Halting probability (lambda_n)
+                lambda_n = self.halt_block(combined_output)
+
+                # # Force halt at last step
+                # if r == self.max_recurrence - 1:
+                #     lambda_n = torch.ones_like(lambda_n)
+
+                p_n = unhalted_prob * lambda_n
+                unhalted_prob = unhalted_prob * (1 - lambda_n)
+
+                p_n_list.append(p_n)
+
+                # break the loop if halting probability is above the threshold
+                if self.halt_threshold is not None and (lambda_n.mean() > self.halt_threshold or r == self.max_recurrence - 1):
+                    output['halt_signal'][r] = lambda_n.mean().item()
+                    break    
+                
+                
+        # PonderNet Regularization
+        kl_loss = torch.tensor(0.0, device=x.device)
+        for r, p_n in enumerate(p_n_list):
+            geom_log_prob = r * math.log(1 - self.lambda_ponder) + math.log(self.lambda_ponder)
+            kl_term = p_n * (torch.log(p_n + 1e-9) - geom_log_prob)
+            kl_loss += kl_term.mean()
         
-        output = {}
+        ponder_regularization_losses.append(kl_loss)                
+        
         if self.return_each_recurrence_output:
             output["recurrence_outputs"] = all_recurrence_outputs
         
         if self.penalize_recurrence_embedding_similarity:
             output["cosine_similarity"] = torch.stack(cosine_similarities).mean()
             output["mse_similarity"] = torch.stack(mse_similarities).mean()
+
+        if self.use_combined_representation:
+            output["combined_output"] = combined_output.to(type_)
             
 
         output["output"] = x.to(type_)
 
-        return output
+        missing_halt_signals_cnt = self.current_recurrence - len(p_n_list)
+        for _ in range(missing_halt_signals_cnt):
+            p_n_list.append(torch.ones(batch_size, seq_len, device=x.device))
+        return output, ponder_regularization_losses, p_n_list
+
+class CombinedRepresentationGPT2Block(nn.Module):
+    def __init__(
+        self,
+        n_embd: int,
+        num_representations_max: int,
+        gates_bias: Optional[List[float]] = None
+    ):
+        super().__init__()
+        self.n_embd = n_embd
+        self.num_representations = num_representations_max
+        self.block_type = BlockTypes.COMBINED_REPRESENTATION
+
+        # define learnable gates for combining the representations
+        self.gate_layers = nn.ModuleList([
+            nn.Linear(n_embd, n_embd) for _ in range(num_representations_max)
+        ])
+        self.current_gates = [torch.zeros(n_embd) for _ in self.gate_layers]
+        self.current_gates_normalized = [torch.zeros(n_embd) for _ in self.gate_layers]
+        if gates_bias is not None:
+            assert len(gates_bias) == num_representations_max, "Length of gates_bias should be equal to num_representations_max"
+            # self.gate_bias = nn.Parameter(torch.tensor(gates_bias).unsqueeze(1).expand(-1, n_embd)) # bias for each gate
+            self.gate_bias = nn.Parameter(
+                torch.tensor(gates_bias).unsqueeze(1).repeat(1, n_embd)
+            )
+        else:
+            self.gate_bias = nn.Parameter(torch.zeros(num_representations_max, n_embd)) # bias for each gate
+
+    def reset_current_gates(self):
+        self.current_gates = [torch.zeros(self.n_embd) for _ in self.gate_layers]
+        self.current_gates_normalized = [torch.zeros(self.n_embd) for _ in self.gate_layers]
+
+    def forward(
+        self, 
+        x: Union[dict[str, Any], torch.Tensor],
+        pre_computed_combined_representation: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, dict[int, torch.Tensor]]:
+        
+        if isinstance(x, dict):
+            if "recurrence_outputs" in x:
+                representations = x["recurrence_outputs"]
+            else:
+                 # Unexpected dict structure
+                 raise ValueError("Unexpected input dictionary structure in CombinedRepresentationGPT2Block")
+        else:
+            representations = [x]
+
+
+        combined_h = torch.zeros_like(representations[0])
+        
+        for i, h in enumerate(representations):
+            if (
+                isinstance(pre_computed_combined_representation, (list, tuple))
+                and i < len(pre_computed_combined_representation)
+            ):
+                # if the representation is from a previous step, we can use it directly without gating
+                # to do that we should first reconstruct the combined representation up to this step
+                # combined_h = combined_h + pre_computed_combined_representation[i] / self.gate_layers[i]
+                continue
+            
+            # g = σ(Wh)
+            gate = torch.sigmoid(self.gate_layers[i](h) + self.gate_bias[i])
+            self.current_gates[i] = gate
+        
+        
+        # normalize gates so that they sum to 1 using Softmax only to valid
+        # representations --> len(representations)
+        gates_stack = torch.stack([self.current_gates[i] for i in range(len(representations))], dim=0) # shape: num_representations, n_embd
+        gates_normalized = torch.nn.functional.softmax(gates_stack, dim=0) # shape: num_representations, n_embd
+        self.current_gates_normalized = [gates_normalized[i] for i in range(len(representations))]
+        for i, h in enumerate(representations):
+            combined_h = combined_h + gates_normalized[i] * h
+    
+        return combined_h
+    
+class HaltGPT2Block(nn.Module):
+    def __init__(
+        self,
+        n_embd: int,
+    ):
+        super().__init__()
+        self.block_type = BlockTypes.HALT
+        # tis layer outputs a scalar between 0 and 1 indicating whether to halt or not
+        # for the given sequence
+        self.halt_layer = nn.Linear(n_embd, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        halt_signal = torch.sigmoid(self.halt_layer(x)).squeeze(-1)  # shape: (batch_size, seq_len)
+        return halt_signal
+
 
 class GroupRecursiveGPT2Block(nn.Module):
     """
@@ -1267,6 +1461,10 @@ class GPT2LLM(NNModel):
         return_each_recurrence_output: bool = False,
         separate_lm_head_norm: bool = False,
         use_last_iteration_output_as_final: bool = True,
+        use_combined_representation: bool = False,
+        halt_threshold: Optional[float] = 1.0,
+        lambda_ponder: float = 0.2,
+        gates_bias: Optional[List[float]] = None,
     ):
         """
         Initializes the GPT2LLM object.
@@ -1319,7 +1517,6 @@ class GPT2LLM(NNModel):
         self.recurrence_embedding_base_freq = recurrence_embedding_base_freq
         self.neft = neft
         self.neft_alpha = neft_alpha
-        # self.osicallate_recurrence = osicallate_recurrence
         self.recurrence_usage_stats = {}
         self.processed_layers_in_this_run = 0
         self.use_LNS = use_LNS
@@ -1327,6 +1524,11 @@ class GPT2LLM(NNModel):
         self.return_each_recurrence_output = return_each_recurrence_output
         self.separate_lm_head_norm = separate_lm_head_norm
         self.use_last_iteration_output_as_final = use_last_iteration_output_as_final
+        self.use_combined_representation = use_combined_representation
+        self.halt_threshold = halt_threshold
+        self.lambda_ponder = lambda_ponder
+        self.gates_bias = gates_bias
+        
         if return_each_recurrence_output:
             # if (len(recurrent_blocks_indices) != 1 or len(recurrent_blocks_indices[0]) != n_layer):
             #     raise ValueError(
@@ -1357,6 +1559,13 @@ class GPT2LLM(NNModel):
             self.max_recurrences = recurrent_blocks_max_recurrences
 
         self._check_max_recurrences()
+
+        if use_combined_representation:
+            # self.combined_representation_block = CombinedRepresentationGPT2Block(n_embd=n_embd, num_representations_max=max(self.max_recurrences))
+            # self.halt_block = HaltGPT2Block(n_embd=n_embd)
+            self.halt_value_stats = {}
+            self.gate_stats = {f"gate_{i}": {} for i in range(max(self.max_recurrences))}
+            self.gate_normalized_stats = {f"normalized_gate_{i}": {} for i in range(max(self.max_recurrences))}
 
         # TODO: dependency injection
         if poe_type is PositionTypes.ABSOLUTE:
@@ -1443,7 +1652,15 @@ class GPT2LLM(NNModel):
                 if block_type == BlockTypes.GROUP_RECURSIVE:
                     block = GroupRecursiveGPT2Block(**block_arguments)
                 else:  # GROUP_RECURSIVE_MTP
-                    block = GroupRecursiveGPT2MTPBlock(**block_arguments)
+                    block = GroupRecursiveGPT2MTPBlock(
+                        use_combined_representation=use_combined_representation,
+                        halt_threshold=halt_threshold,
+                        lambda_ponder=lambda_ponder,
+                        gates_bias=gates_bias,
+                        **block_arguments
+                    )
+            elif block_type in [BlockTypes.COMBINED_REPRESENTATION, BlockTypes.HALT]:
+                pass
             else:
                 raise ValueError(
                     f"Block type {block_type} not supported! "
@@ -1590,6 +1807,64 @@ class GPT2LLM(NNModel):
         
         self.recurrence_logits_entropy_stats[int(iter_idx)].append(entropy.item())
 
+    def record_halt_signal_stats(self, halt_signals):
+        if not self.training:
+            return
+        for iter_idx, halt_signal in enumerate(halt_signals):
+            if int(iter_idx) not in self.halt_value_stats:
+                self.halt_value_stats[int(iter_idx)] = []
+            
+            self.halt_value_stats[int(iter_idx)].append(halt_signal)
+
+    def record_gate_stats(self, gate_values_dict, layer_idx, max_iters):
+        if not self.training:
+            return
+        
+        for iter_idx in range(max_iters):
+            gate_val = 0.0
+            if isinstance(gate_values_dict, dict) and iter_idx in gate_values_dict:
+                gate_val = 0.0 if gate_values_dict[iter_idx] is None else gate_values_dict[iter_idx].mean().item()
+            elif isinstance(gate_values_dict, list) and iter_idx < len(gate_values_dict):
+                gate_val = 0.0 if gate_values_dict[iter_idx] is None else gate_values_dict[iter_idx].mean().item()
+            
+            gate_key = f"gate_{iter_idx}"
+            if gate_key not in self.gate_stats:
+                 self.gate_stats[gate_key] = {}
+            
+            if int(layer_idx) not in self.gate_stats[gate_key]:
+                self.gate_stats[gate_key][int(layer_idx)] = {}
+
+            if int(iter_idx) not in self.gate_stats[gate_key][int(layer_idx)]:
+                self.gate_stats[gate_key][int(layer_idx)][int(iter_idx)] = []
+
+            self.gate_stats[gate_key][int(layer_idx)][int(iter_idx)].append(gate_val)
+    
+    def record_gate_normalized_stats(self, gate_values_normalized_dict, layer_idx, max_iters):
+        if not self.training:
+            return
+        
+        for iter_idx in range(max_iters):
+            gate_val = 0.0
+            if isinstance(gate_values_normalized_dict, dict) and iter_idx in gate_values_normalized_dict:
+                gate_val = 0.0 if gate_values_normalized_dict[iter_idx] is None else gate_values_normalized_dict[iter_idx].mean().item()
+            elif isinstance(gate_values_normalized_dict, list) and iter_idx < len(gate_values_normalized_dict):
+                gate_val = 0.0 if gate_values_normalized_dict[iter_idx] is None else gate_values_normalized_dict[iter_idx].mean().item()
+            
+            gate_key = f"gate_{iter_idx}_normalized"
+            if gate_key not in self.gate_normalized_stats:
+                 self.gate_normalized_stats[gate_key] = {}
+            
+            if int(layer_idx) not in self.gate_normalized_stats[gate_key]:
+                self.gate_normalized_stats[gate_key][int(layer_idx)] = {}
+            
+            if int(iter_idx) not in self.gate_normalized_stats[gate_key][int(layer_idx)]:
+                self.gate_normalized_stats[gate_key][int(layer_idx)][int(iter_idx)] = []
+            
+            self.gate_normalized_stats[gate_key][int(layer_idx)][int(iter_idx)].append(gate_val)    
+            
+            
+
+
     def get_recurrence_similarity_penalty(self) -> torch.Tensor:
         pass
     
@@ -1670,19 +1945,50 @@ class GPT2LLM(NNModel):
 
         recurrence_cosine_similarities = []
         recurrence_mse_similarities = []
+        ponder_regularization_losses = []
+        combined_output = None
         for layer_idx in self.transformer.h:
-            if self.blocks_types[int(layer_idx)] in [BlockTypes.GROUP_RECURSIVE, BlockTypes.GROUP_RECURSIVE_MTP]:
+            block_type = self.blocks_types[int(layer_idx)]
+                
+            if block_type in [BlockTypes.GROUP_RECURSIVE, BlockTypes.GROUP_RECURSIVE_MTP]:
                 block: Union[GroupRecursiveGPT2Block, GroupRecursiveGPT2MTPBlock] = self.transformer.h[layer_idx]  # type: ignore
-                # set the std for sampling the number of recurrences based on the training steps
-
                 if self.training:# and sampling_std is not None:
                     block.set_sampling_std(sampling_std)
 
+                output = {}
+                if block_type == BlockTypes.GROUP_RECURSIVE_MTP:
+                    # PonderNet setup
+                    batch_size = h.size(0)
+                    seq_len = h.size(1)
+                    unhalted_prob = torch.ones(batch_size, seq_len, device=h.device)
+                    ponder_h = torch.zeros_like(h)
+                    # p_n_list = []
+                    gates = {}
+
+                    # for r in range(block.max_recurrence):
+                    output, ponder_regularization_losses, p_n_list = block(
+                        h,
+                        # recurrence_outputs=output.get("recurrence_outputs", None), 
+                        tokens_repres=tokens_repres
+                    )
+
+                    if self.use_combined_representation:
+                        h = output["combined_output"]
+                    else:
+                        h = output["output"]
+
+                    self.record_gate_stats(block.combined_representation_block.current_gates, layer_idx, block.max_recurrence)
+                    self.record_gate_normalized_stats(block.combined_representation_block.current_gates_normalized, layer_idx, block.max_recurrence) #TODO
+
+                    self.record_halt_signal_stats(p_n_list)
+                    current_gates = block.combined_representation_block.current_gates
+                    current_gates_normalized = block.combined_representation_block.current_gates_normalized
+                    block.combined_representation_block.reset_current_gates()
+
+                else:
+                    output = block(h, tokens_repres=tokens_repres)
+                    h = output["output"]
                 
-            if self.blocks_types[int(layer_idx)] in [BlockTypes.GROUP_RECURSIVE, BlockTypes.GROUP_RECURSIVE_MTP]:
-                block: Union[GroupRecursiveGPT2Block, GroupRecursiveGPT2MTPBlock] = self.transformer.h[layer_idx]  # type: ignore
-                output = block(h, tokens_repres=tokens_repres)
-                h = output["output"]
                 if self.penalize_recurrence_embedding_similarity:
                     cosine_similarity = output["cosine_similarity"]
                     mse_similarity = output["mse_similarity"]
@@ -1693,13 +1999,14 @@ class GPT2LLM(NNModel):
             else:
                 before_h = h
                 h = self.transformer.h[layer_idx](h)
+                
                 cosine_similarity = nn.functional.cosine_similarity(
                     before_h.view(before_h.size(0), -1), h.view(h.size(0), -1), dim=-1
                 ).mean()
                 with torch.no_grad():
                     mse_similarity = nn.functional.mse_loss(before_h, h, reduction='mean').mean()
 
-            if self.blocks_types[int(layer_idx)] in [BlockTypes.GROUP_RECURSIVE, BlockTypes.GROUP_RECURSIVE_MTP]:
+            if block_type in [BlockTypes.GROUP_RECURSIVE, BlockTypes.GROUP_RECURSIVE_MTP]:
                 block: Union[GroupRecursiveGPT2Block, GroupRecursiveGPT2MTPBlock] = self.transformer.h[layer_idx]  # type: ignore
                 if self.training:
                     self.record_recurrence_usage_stats(layer_idx, block)
@@ -1717,13 +2024,17 @@ class GPT2LLM(NNModel):
         self.reset_processed_layers_cnt()
         
         final_output = {}
+        if ponder_regularization_losses:
+            final_output["ponder_regularization_loss"] = torch.stack(ponder_regularization_losses).mean()
+
         if self.penalize_recurrence_embedding_similarity:
             final_output["recurrence_embedding_cosine_similarity"] = torch.stack(recurrence_cosine_similarities).mean() if recurrence_cosine_similarities else torch.tensor(0.0)
             final_output["recurrence_embedding_mse_similarity"] = torch.stack(recurrence_mse_similarities).mean() if recurrence_mse_similarities else torch.tensor(0.0)
         if self.return_each_recurrence_output:
             final_output["each_recurrence_entropy"] = []
             final_output["each_recurrence_logits"] = []
-            for r in range(self.max_recurrences[-1]-1): # already calculated the last iteration outputs
+            # for r in range(self.max_recurrences[-1]-1): # already calculated the last iteration outputs
+            for r in range(len(each_recurrence_outputs)-1):
                 if self.separate_lm_head_norm:
                     o = self.transformer.lm_head_norm[r](each_recurrence_outputs[r])
                 else:
@@ -1746,11 +2057,21 @@ class GPT2LLM(NNModel):
             if self.training:
                 self.record_recurrence_logits_entropy_stats(self.max_recurrences[-1]-1, entropy)
         
+        final_output["gates"] = current_gates if self.use_combined_representation else None
+        final_output["gates_normalized"] = current_gates_normalized if self.use_combined_representation else None
+        
+        if self.use_combined_representation:
+            missing_gates_cnt = len(final_output["gates"]) - len(final_output["gates_normalized"])
+            for _ in range(missing_gates_cnt):
+                final_output["gates_normalized"].append(torch.zeros_like(final_output["gates"][0]))
+
+        
         if self.use_last_iteration_output_as_final:
             final_output["logits"] = h
         else:
             final_output["logits"] = final_output["each_recurrence_logits"][0] 
         return final_output if len(final_output) > 1 else h
+    
 
 def get_logits_entropy(logits: torch.Tensor):
     """
