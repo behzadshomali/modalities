@@ -3,8 +3,8 @@
   data_dir_cc: ${oc.env:DATA_DIR_CC}
   data_dir_math: ${oc.env:DATA_DIR_MATH}
   checkpoint_saving_path: ${oc.env:CHECKPOINT_SAVING_PATH}
-  wandb_mode: ${oc.env:WANDB_MODE}
-  wandb_path: ${oc.env:WANDB_PATH}
+  wandb_mode: ${oc.env:WANDB_MODE_M}
+  wandb_path: ${oc.env:WANDB_PATH_M}
 #   config_file_path: ${modalities_env:config_file_path}
 #   referencing_keys:
 #     sample_key: input_ids
@@ -373,8 +373,8 @@ settings:
   data_dir_cc: ${oc.env:DATA_DIR_CC}
   data_dir_math: ${oc.env:DATA_DIR_MATH}
   checkpoint_saving_path: ${oc.env:CHECKPOINT_SAVING_PATH}
-  wandb_mode: ${oc.env:WANDB_MODE}
-  wandb_path: ${oc.env:WANDB_PATH}
+  wandb_mode: ${oc.env:WANDB_MODE_M}
+  wandb_path: ${oc.env:WANDB_PATH_M}
   config_file_path: ${modalities_env:config_file_path}
   referencing_keys:
     sample_key: input_ids
