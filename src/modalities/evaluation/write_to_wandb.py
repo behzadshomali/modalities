@@ -12,7 +12,7 @@ from olmes_evaluator import evaluate_modalities_checkpoint
 
 # --- CONFIGURATION MATCHING YOUR CLI ---
 ENTITY = "behzadshomali"
-PROJECT = "nemotron_MATH_PartialMTP"
+PROJECT = "nemotron_MATH_PartialMTP_Gating"
 CHECKPOINTS_ROOT = "/raid/s3/opengptx/behzad_shomali/checkpoints/"
 BENCHMARK_ROOT = "./benchmarks_v1" 
 MAX_LENGTH = 2048
@@ -23,31 +23,28 @@ TASKS_TO_RUN = [
     "modalities:base_easy:qa_rc",
     "modalities:base_easy:code_bpb",
     "modalities:base_easy:qa_bpb",
-    "modalities:base_easy:math_ac",
-    "basic_skills:rc::olmes:modalities",
-    "basic_skills:rc:bpb::olmes:modalities"
+    # "modalities:base_easy:math_ac",
+    
+    # "basic_skills:rc::olmes",
+    # "basic_skills:rc:bpb::olmes"
 ]
 
 # 2. LIMIT
-EVAL_LIMIT = 64
+EVAL_LIMIT = 128
 
 # 3. BATCH SIZE
-BATCH_SIZE = 2
+BATCH_SIZE = 8
 
 # 4. MAPPING:
 FOLDER_MAPPING = {
     ## "folder_unique_identifier" : "wandb_run_id"
-    # "2026-01-14__17-23-38_7f85baa58f096684": "9hyrlxu2",
-    # "2026-01-15__15-22-41_ae159b022daf96cb": "xp0999b0", # Increase hidden baseline
-
-    # "2026-01-12__15-52-31_d5de661a639f354a": "w38slo0n", # 257M_GradProj_MTPT
-    # "2026-01-04__12-48-20_7669e5288dc2f8f3": "83ar3gdh",
-
-    "2026-01-22__17-52-12_3a5b61a2043d85a1": "urh3ro9v", # best so far small blocks grad proj MTP 2
-    "2026-01-22__15-57-43_a7f9a98973c6c283": "q5nfhpr1", # MTP 2 wo/ grad proj
-    "2026-01-22__15-57-08_e9056200d931eab1": "nw7hdvf5", # MTP 2 grad proj
-    "2026-01-22__18-07-34_bbc0148afae6b0fa": "kralywlh", # baseline,
-    "2026-01-23__10-31-03_0eaacff18025714c": "042nlf1g", # MTP 2 wo/ grad proj small blocks
+    # "2026-02-11__10-36-48_abff36d0a7122c6b": "usbeeci5", # baseline
+    # "2026-02-11__16-28-52_b6df3e76ae591a56": "efniolfw"
+    # "2026-02-11__14-19-13_b6df3e76ae591a56": "5jh562ey"
+    "2026-02-13__16-30-25_5c39a717dcaa5422": "oyc9aqld",
+    "2026-02-13__16-26-16_93878c455150a246": "gwtf33ol",
+    "2026-02-13__16-11-06_2519d6a77d994c97": "6lkwm5bu",
+    "2026-02-13__16-10-36_6995ab4a053107ec": "ljbcigeo"
 }
 
 def get_run_id_for_folder(folder_name):
