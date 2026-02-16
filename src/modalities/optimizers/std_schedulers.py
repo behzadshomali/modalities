@@ -86,18 +86,46 @@ class CosineMTPLambdaScheduler(MTPLambdaScheduler):
 class SigmoidMTPLambdaScheduler(MTPLambdaScheduler):
     """Sigmoid schedule for mtp_lambda from start_value to end_value over total_steps."""
     
-    def __init__(self, start_value: float, end_value: float, total_steps: int, steepness: float = 10.0, cap_value: float = None):
+    def __init__(
+        self, 
+        start_value: float, 
+        end_value: float, 
+        total_steps: int, 
+        steepness: float = 10.0, 
+        cap_value: float = None,
+        training_start_portion: float = 0.0,
+        training_end_portion: float = 1.0
+    ):
         super().__init__(start_value)
         self.start_value = start_value
         self.end_value = end_value
         self.total_steps = total_steps
         self.steepness = steepness
         self.cap_value = cap_value
+        self.training_start_portion = training_start_portion
+        self.training_end_portion = training_end_portion
 
     def get_mtp_lambda(self):
         t = min(self.last_step / self.total_steps, 1.0)
-        # Sigmoid function centered at t=0.5
-        sigmoid_t = 1 / (1 + math.exp(-self.steepness * (t - 0.5)))
+        
+        # Adjust t based on start and end portions
+        if t <= self.training_start_portion:
+            # Before the schedule starts
+            adjusted_t = 0.0
+        elif t >= self.training_end_portion:
+             # After the schedule ends
+            adjusted_t = 1.0
+        else:
+             # During the schedule: normalize t to be between 0 and 1 within the window
+            denominator = self.training_end_portion - self.training_start_portion
+            if denominator > 0:
+                adjusted_t = (t - self.training_start_portion) / denominator
+            else:
+                 # Start and end portion are the same, jump to end
+                adjusted_t = 1.0
+
+        # Sigmoid function centered at adjusted_t=0.5
+        sigmoid_t = 1 / (1 + math.exp(-self.steepness * (adjusted_t - 0.5)))
         value = self.start_value + sigmoid_t * (self.end_value - self.start_value)
         if self.cap_value is not None:
             value = min(value, self.cap_value)
