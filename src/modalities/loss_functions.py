@@ -692,7 +692,7 @@ class MTPCrossEntropyLossTemporalDiscountingPonder(Loss):
         ...
 
     def __call__(self, *args, **kwargs) -> torch.Tensor:
-        labels, _, mtp_logits_list, ponder_regularization_loss, gates = self._parse_arguments(args, kwargs)
+        labels, _, mtp_logits_list, ponder_regularization_loss, gates, pn_tensor = self._parse_arguments(args, kwargs)
 
         # Move labels to correct device
         labels = labels.to(mtp_logits_list[0].device).long()
@@ -744,10 +744,7 @@ class MTPCrossEntropyLossTemporalDiscountingPonder(Loss):
                     slice_labels.view(-1)
                 )
                 # gates shape: iterations x batch_size x seq_len x dim
-                weighted_loss = current_mtp_loss * (self.discount_factor ** shift)
-                if self.mixed_gate_loss:  
-                    weighted_loss *= gates[shift].mean()
-                
+                weighted_loss = current_mtp_loss * (self.discount_factor ** shift) 
                 mtp_loss_sum += weighted_loss
     
         
@@ -804,4 +801,5 @@ class MTPCrossEntropyLossTemporalDiscountingPonder(Loss):
         ponder_regularization_loss = lm_logits["ponder_regularization_loss"]
         # gates = lm_logits["gates"]
         gates = lm_logits["gates_normalized"]
-        return labels, lm_logits, mtp_logits_list, ponder_regularization_loss, gates
+        pn_tensor = lm_logits.get("pn_tensor", None)  # Optional tensor for mixed gate loss
+        return labels, lm_logits, mtp_logits_list, ponder_regularization_loss, gates, pn_tensor
