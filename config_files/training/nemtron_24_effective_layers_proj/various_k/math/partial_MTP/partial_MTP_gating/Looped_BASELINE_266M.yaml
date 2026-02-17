@@ -250,18 +250,11 @@ checkpoint_saving:
 
 loss_fn:
   component_key: loss
-  variant_key: clm_mtp_recurrence_loss_temporal_discounting
+  variant_key: clm_recurrence_cosine_sim_penalty_loss
   config:
     target_key: ${settings.referencing_keys.target_key}
     prediction_key: ${settings.referencing_keys.prediction_key}
-    mtp_prediction_key: each_recurrence_logits
-    mtp_lambda: 1.0  # Initial value (will be overridden by scheduler)
-    discount_factor: 1.0
-    perform_gradient_projection: false
-    monitor_gradient_conflicts: false
-    mtp_lambda_scheduler:
-      instance_key: mtp_lambda_scheduler
-      pass_type: BY_REFERENCE
+    penalty_alpha: 0
 
 device_mesh:
   component_key: device_mesh

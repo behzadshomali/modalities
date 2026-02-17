@@ -258,9 +258,9 @@ loss_fn:
     mtp_lambda: 1.0  # Initial value (will be overridden by scheduler)
     discount_factor: 1.0
     ponder_weight: 0.01 # Initial value (will be overridden by scheduler)
-    mtp_lambda_scheduler:
-      instance_key: mtp_lambda_scheduler
-      pass_type: BY_REFERENCE
+    # mtp_lambda_scheduler:
+    #   instance_key: mtp_lambda_scheduler
+    #   pass_type: BY_REFERENCE
     efficiency_lambda_scheduler:
       instance_key: efficiency_lambda_scheduler
       pass_type: BY_REFERENCE
@@ -404,7 +404,8 @@ model_raw:
     use_combined_representation: true
     halt_threshold: 0.5
     lambda_ponder: 0.5 # 1/2
-    gates_bias: [3, -6, -6] # Set the biases for the gates (one for each gate).
+    gates_bias: [0.55, -7.0, -7.0] # Set the biases for the gates (one for each gate).
+    multiply_bias: true
 
 lr_scheduler:
   component_key: scheduler
@@ -475,21 +476,21 @@ evaluation_subscriber:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_MATH_PartialMTP_Gating
     mode: ${settings.wandb_mode}
-    experiment_id: Bias=${model_raw.config.gates_bias}_LambdaP=${model_raw.config.lambda_ponder}_PonderLoss_HaltingTh=${model_raw.config.halt_threshold}_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_recurEmbed=${model_raw.config.use_recurrence_embedding}_${settings.experiment_id}
+    experiment_id: MultiplyBias=${model_raw.config.gates_bias}_LambdaP=${model_raw.config.lambda_ponder}_PonderLoss_HaltingTh=${model_raw.config.halt_threshold}_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_recurEmbed=${model_raw.config.use_recurrence_embedding}_${settings.experiment_id}
     tags: [257M, Partial_MTP, 2Token, GradProj]
     directory: ${settings.wandb_path}
     config_file_path: ${settings.config_file_path}
 
-mtp_lambda_scheduler:
-  component_key: scheduler
-  variant_key: sigmoid_mtp_lambda
-  config:
-    start_value: 0.001
-    end_value: 0.5
-    steepness: 20.0
-    training_start_portion: 0.10
-    training_end_portion: 0.50
-    total_steps: ${settings.training_target.num_target_steps}
+# mtp_lambda_scheduler:
+#   component_key: scheduler
+#   variant_key: sigmoid_mtp_lambda
+#   config:
+#     start_value: 0.001
+#     end_value: 0.5
+#     steepness: 20.0
+#     training_start_portion: 0.10
+#     training_end_portion: 0.50
+#     total_steps: ${settings.training_target.num_target_steps}
 
 efficiency_lambda_scheduler:
   component_key: scheduler

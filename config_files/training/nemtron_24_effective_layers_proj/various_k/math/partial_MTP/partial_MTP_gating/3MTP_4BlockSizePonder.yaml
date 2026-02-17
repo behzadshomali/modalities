@@ -264,6 +264,7 @@ loss_fn:
     efficiency_lambda_scheduler:
       instance_key: efficiency_lambda_scheduler
       pass_type: BY_REFERENCE
+    mixed_gate_loss: true
 
 device_mesh:
   component_key: device_mesh
@@ -475,7 +476,7 @@ evaluation_subscriber:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_MATH_PartialMTP_Gating
     mode: ${settings.wandb_mode}
-    experiment_id: Bias=${model_raw.config.gates_bias}_LambdaP=${model_raw.config.lambda_ponder}_PonderLoss_HaltingTh=${model_raw.config.halt_threshold}_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_recurEmbed=${model_raw.config.use_recurrence_embedding}_${settings.experiment_id}
+    experiment_id: MixedProb_NonHaltTrain_SpecialPonderWeight_Bias=${model_raw.config.gates_bias}_LambdaP=${model_raw.config.lambda_ponder}_PonderLoss_HaltingTh=${model_raw.config.halt_threshold}_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_recurEmbed=${model_raw.config.use_recurrence_embedding}_${settings.experiment_id}
     tags: [257M, Partial_MTP, 2Token, GradProj]
     directory: ${settings.wandb_path}
     config_file_path: ${settings.config_file_path}
@@ -495,9 +496,9 @@ efficiency_lambda_scheduler:
   component_key: scheduler
   variant_key: sigmoid_mtp_lambda
   config:
-    start_value: 0.0
-    end_value: 0.01
+    start_value: 0.1
+    end_value: 0.05
     steepness: 20.0
-    training_start_portion: 0.50
-    training_end_portion: 0.75
+    training_start_portion: 0.0
+    training_end_portion: 0.4
     total_steps: ${settings.training_target.num_target_steps}
