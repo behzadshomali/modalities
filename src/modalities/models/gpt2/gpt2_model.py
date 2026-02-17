@@ -401,6 +401,7 @@ class GPT2LLMConfig(BaseModel):
     halt_threshold: Optional[float] = None
     lambda_ponder: float = 0.2
     gates_bias: Optional[List[float]] = None
+    multiply_bias: bool = False
 
     @model_validator(mode="after")
     def check_divisibility(self) -> "GPT2LLMConfig":
@@ -907,6 +908,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         halt_threshold: Optional[float] = None,
         lambda_ponder: float = 0.2,
         gates_bias: Optional[List[float]] = None,
+        multiply_bias: bool = False
     ):
         """
         Initializes the GroupRecursiveGPT2MTPBlock.
@@ -956,7 +958,8 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             self.combined_representation_block = CombinedRepresentationGPT2Block(
                 n_embd=n_embd, 
                 num_representations_max=self.max_recurrence,
-                gates_bias=gates_bias
+                gates_bias=gates_bias,
+                multiply_bias=multiply_bias
             )
             self.halt_block = HaltGPT2Block(n_embd=n_embd)
             
@@ -1124,24 +1127,72 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
                 #     lambda_n = torch.ones_like(lambda_n)
 
                 p_n = unhalted_prob * lambda_n
+                
                 unhalted_prob = unhalted_prob * (1 - lambda_n)
 
                 p_n_list.append(p_n)
 
                 # break the loop if halting probability is above the threshold
-                if self.halt_threshold is not None and (lambda_n.mean() > self.halt_threshold or r == self.max_recurrence - 1):
-                    output['halt_signal'][r] = lambda_n.mean().item()
-                    break    
+                # if not self.training and self.halt_threshold is not None:
+                #     if (lambda_n.mean() > self.halt_threshold or r == self.max_recurrence - 1):
+                #         output['halt_signal'][r] = lambda_n.mean().item()
+                #         break    
+
                 
-                
-        # PonderNet Regularization
-        kl_loss = torch.tensor(0.0, device=x.device)
-        for r, p_n in enumerate(p_n_list):
-            geom_log_prob = r * math.log(1 - self.lambda_ponder) + math.log(self.lambda_ponder)
-            kl_term = p_n * (torch.log(p_n + 1e-9) - geom_log_prob)
-            kl_loss += kl_term.mean()
-        
-        ponder_regularization_losses.append(kl_loss)                
+        if self.use_combined_representation:
+            current_gates_normalized_tensor = torch.stack(
+                self.combined_representation_block.current_gates_normalized, dim=1
+            )  # [batch, steps, seq, dim]
+
+            # Convert gate tensor to a halting distribution over steps by averaging over hidden dim.
+            current_gates_normalized_tensor = current_gates_normalized_tensor.mean(dim=-1)  # [batch, steps, seq]
+            current_gates_normalized_tensor = current_gates_normalized_tensor / (current_gates_normalized_tensor.sum(dim=1, keepdim=True) + 1e-8)
+
+            b, current_steps, seq = current_gates_normalized_tensor.size()
+            if current_steps < self.max_recurrence:
+                pad = torch.zeros(
+                    b,
+                    self.max_recurrence - current_steps,
+                    seq,
+                    device=current_gates_normalized_tensor.device,
+                    dtype=current_gates_normalized_tensor.dtype,
+                )
+                p_n_for_kl = torch.cat([current_gates_normalized_tensor, pad], dim=1)
+            else:
+                p_n_for_kl = current_gates_normalized_tensor[:, : self.max_recurrence, :]
+
+            prior_dist = torch.ones(
+                b,
+                self.max_recurrence,
+                seq,
+                device=current_gates_normalized_tensor.device,
+                dtype=current_gates_normalized_tensor.dtype,
+            ) / self.max_recurrence
+
+            # KL(P || Q) with P: model step distribution, Q: uniform prior over max recurrence.
+            kl_loss = p_n_for_kl * (torch.log(p_n_for_kl + 1e-8) - torch.log(prior_dist + 1e-8))
+            kl_loss = kl_loss.sum(dim=1).mean()  # sum over steps, mean over batch/seq
+            ponder_regularization_losses.append(kl_loss)
+            
+
+        #     # assign the remaining probability to the last step
+        #     p_n_list[-1] = p_n_list[-1] + unhalted_prob
+
+        #     p_n_tensor = torch.stack(p_n_list, dim=1).squeeze(-1) # [batch, steps]
+            
+        #     # Prior dist: uniform distribution over the number of steps (1 to current_recurrence)
+        #     # and not the tokens (only the first two dimensions matter for the prior: batch x steps x seq)
+        #     b, s, l = p_n_tensor.size()
+        #     prior_dist = torch.ones(b, s, device=p_n_tensor.device) / self.max_recurrence
+        #     prior_dist = prior_dist.unsqueeze(-1).expand_as(p_n_tensor) # [batch, steps, seq]
+
+        #     # KL Calculation
+        #     # KL(P || Q) = sum(P * log(P / Q))
+        #     kl_loss = p_n_tensor * (torch.log(p_n_tensor + 1e-8) - torch.log(prior_dist + 1e-8))
+        #     kl_loss = kl_loss.sum(dim=1).mean() # Sum over steps, mean over batch
+            
+        #     ponder_regularization_losses.append(kl_loss)   
+                   
         
         if self.return_each_recurrence_output:
             output["recurrence_outputs"] = all_recurrence_outputs
@@ -1152,6 +1203,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
 
         if self.use_combined_representation:
             output["combined_output"] = combined_output.to(type_)
+            output["pn_tensor"] = current_gates_normalized_tensor
             
 
         output["output"] = x.to(type_)
@@ -1166,7 +1218,8 @@ class CombinedRepresentationGPT2Block(nn.Module):
         self,
         n_embd: int,
         num_representations_max: int,
-        gates_bias: Optional[List[float]] = None
+        gates_bias: Optional[List[float]] = None,
+        multiply_bias: bool = False,
     ):
         super().__init__()
         self.n_embd = n_embd
@@ -1187,6 +1240,8 @@ class CombinedRepresentationGPT2Block(nn.Module):
             )
         else:
             self.gate_bias = nn.Parameter(torch.zeros(num_representations_max, n_embd)) # bias for each gate
+        
+        self.multiply_bias = multiply_bias
 
     def reset_current_gates(self):
         self.current_gates = [torch.zeros(self.n_embd) for _ in self.gate_layers]
@@ -1217,18 +1272,32 @@ class CombinedRepresentationGPT2Block(nn.Module):
             ):
                 # if the representation is from a previous step, we can use it directly without gating
                 # to do that we should first reconstruct the combined representation up to this step
-                # combined_h = combined_h + pre_computed_combined_representation[i] / self.gate_layers[i]
                 continue
             
             # g = σ(Wh)
-            gate = torch.sigmoid(self.gate_layers[i](h) + self.gate_bias[i])
+            if self.multiply_bias:
+                gate = torch.sigmoid(self.gate_layers[i](h)) * torch.nn.functional.softplus(self.gate_bias[i])
+            else:
+                gate = torch.sigmoid(self.gate_layers[i](h) + self.gate_bias[i])
+            
             self.current_gates[i] = gate
         
         
         # normalize gates so that they sum to 1 using Softmax only to valid
         # representations --> len(representations)
-        gates_stack = torch.stack([self.current_gates[i] for i in range(len(representations))], dim=0) # shape: num_representations, n_embd
-        gates_normalized = torch.nn.functional.softmax(gates_stack, dim=0) # shape: num_representations, n_embd
+        gates_normalized = []
+        unhalted_gates = torch.ones_like(self.current_gates[0])
+        for i in range(len(representations)):
+            gate = self.current_gates[i]
+            gates_normalized.append(gate * unhalted_gates)
+            unhalted_gates = unhalted_gates * (1 - gate)
+
+        # normalize gates so that they sum to 1 across the representations dimension
+        gates_normalized = torch.stack(gates_normalized, dim=0) # shape: num_representations, n_embd
+        gates_normalized = gates_normalized / (gates_normalized.sum(dim=0, keepdim=True) + 1e-8) # shape: num_representations, n_embd
+
+        # gates_stack = torch.stack([self.current_gates[i] for i in range(len(representations))], dim=0) # shape: num_representations, n_embd
+        # gates_normalized = torch.nn.functional.softmax(gates_stack, dim=0) # shape: num_representations, n_embd
         self.current_gates_normalized = [gates_normalized[i] for i in range(len(representations))]
         for i, h in enumerate(representations):
             combined_h = combined_h + gates_normalized[i] * h
@@ -1465,6 +1534,7 @@ class GPT2LLM(NNModel):
         halt_threshold: Optional[float] = 1.0,
         lambda_ponder: float = 0.2,
         gates_bias: Optional[List[float]] = None,
+        multiply_bias: bool = False
     ):
         """
         Initializes the GPT2LLM object.
@@ -1528,6 +1598,7 @@ class GPT2LLM(NNModel):
         self.halt_threshold = halt_threshold
         self.lambda_ponder = lambda_ponder
         self.gates_bias = gates_bias
+        self.multiply_bias = multiply_bias
         
         if return_each_recurrence_output:
             # if (len(recurrent_blocks_indices) != 1 or len(recurrent_blocks_indices[0]) != n_layer):
@@ -1657,6 +1728,7 @@ class GPT2LLM(NNModel):
                         halt_threshold=halt_threshold,
                         lambda_ponder=lambda_ponder,
                         gates_bias=gates_bias,
+                        multiply_bias=multiply_bias,
                         **block_arguments
                     )
             elif block_type in [BlockTypes.COMBINED_REPRESENTATION, BlockTypes.HALT]:
@@ -2061,6 +2133,7 @@ class GPT2LLM(NNModel):
         final_output["gates_normalized"] = current_gates_normalized if self.use_combined_representation else None
         
         if self.use_combined_representation:
+            final_output["pn_tensor"] = output["pn_tensor"] 
             missing_gates_cnt = len(final_output["gates"]) - len(final_output["gates_normalized"])
             for _ in range(missing_gates_cnt):
                 final_output["gates_normalized"].append(torch.zeros_like(final_output["gates"][0]))

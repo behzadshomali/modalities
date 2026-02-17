@@ -593,6 +593,7 @@ class GPT2ModelFactory:
         halt_threshold: Optional[float] = None,
         lambda_ponder: Optional[float] = None,
         gates_bias: Optional[List[float]] = None,
+        multiply_bias: Optional[bool] = False,
     ) -> GPT2LLM:
         config = dict(
             sample_key=sample_key,
@@ -630,7 +631,8 @@ class GPT2ModelFactory:
             use_combined_representation=use_combined_representation,
             halt_threshold=halt_threshold,
             lambda_ponder=lambda_ponder,
-            gates_bias=gates_bias
+            gates_bias=gates_bias,
+            multiply_bias=multiply_bias,
         )
         if use_meta_device and use_weight_tying:
             raise ValueError(
