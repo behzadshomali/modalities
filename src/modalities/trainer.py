@@ -580,7 +580,9 @@ class Trainer:
                     "train ce loss avg": ResultItem(reduced_losses_ce[0], decimal_places=2),
                     "train ce loss last": ResultItem(reduced_losses_ce[1], decimal_places=2),
                     "train aux loss avg": ResultItem(reduced_losses_aux[0], decimal_places=2),
+                    "train aux2 loss avg": ResultItem(reduced_losses_aux2[0], decimal_places=2),
                     "train aux loss last": ResultItem(reduced_losses_aux[1], decimal_places=2),
+                    "train aux2 loss last": ResultItem(reduced_losses_aux2[1], decimal_places=2),
                 }
 
                 consumed_tokens = torch.tensor(training_progress.num_seen_tokens_total)
