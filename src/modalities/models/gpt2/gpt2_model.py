@@ -1108,10 +1108,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
                 mse_similarity = nn.functional.mse_loss(x_before, x_after, reduction='mean')
                 mse_similarities.append(mse_similarity)
 
-            if self.use_combined_representation:
-                ponder_h = torch.zeros_like(x)
-                gates = {} 
-                
+            if self.use_combined_representation:                
                 output['recurrence_outputs'] = all_recurrence_outputs
                 combined_output = self.combined_representation_block(
                     output, 
@@ -1283,21 +1280,48 @@ class CombinedRepresentationGPT2Block(nn.Module):
             self.current_gates[i] = gate
         
         
-        # normalize gates so that they sum to 1 using Softmax only to valid
-        # representations --> len(representations)
-        gates_normalized = []
-        unhalted_gates = torch.ones_like(self.current_gates[0])
-        for i in range(len(representations)):
-            gate = self.current_gates[i]
-            gates_normalized.append(gate * unhalted_gates)
-            unhalted_gates = unhalted_gates * (1 - gate)
+        # # normalize gates so that they sum to 1 using Softmax only to valid
+        # # representations --> len(representations)
+        # gates_normalized = []
+        # unhalted_gates = torch.ones_like(self.current_gates[0])
+        # for i in range(len(representations)):
+        #     gate = self.current_gates[i]
+        #     gates_normalized.append(gate * unhalted_gates)
+        #     unhalted_gates = unhalted_gates * (1 - gate)
 
-        # normalize gates so that they sum to 1 across the representations dimension
-        gates_normalized = torch.stack(gates_normalized, dim=0) # shape: num_representations, n_embd
-        gates_normalized = gates_normalized / (gates_normalized.sum(dim=0, keepdim=True) + 1e-8) # shape: num_representations, n_embd
+        # # normalize gates so that they sum to 1 across the representations dimension
+        # gates_normalized = torch.stack(gates_normalized, dim=0) # shape: num_representations, batch, seq_len, n_embd
+        # gates_normalized = gates_normalized / (gates_normalized.sum(dim=0, keepdim=True) + 1e-8) # shape: num_representations, batch, seq_len, n_embd
 
-        # gates_stack = torch.stack([self.current_gates[i] for i in range(len(representations))], dim=0) # shape: num_representations, n_embd
-        # gates_normalized = torch.nn.functional.softmax(gates_stack, dim=0) # shape: num_representations, n_embd
+        # # gates_stack = torch.stack([self.current_gates[i] for i in range(len(representations))], dim=0) # shape: num_representations, n_embd
+        # # gates_normalized = torch.nn.functional.softmax(gates_stack, dim=0) # shape: num_representations, n_embd
+        # self.current_gates_normalized = [gates_normalized[i] for i in range(len(representations))]
+        # for i, h in enumerate(representations):
+        #     combined_h = combined_h + gates_normalized[i] * h
+    
+        # return combined_h
+
+        ## Halting-style (ACT) normalization: stick-breaking with remainder on last step
+        ## p_i = g_i * prod(1 - g_j for j < i), and p_last = 1 - sum(p_0..p_{last-1})
+        # num_repr = len(representations)
+        # gates_normalized = []
+        # unhalted_gates = torch.ones_like(self.current_gates[0])
+        # for i in range(num_repr):
+        #     gate = self.current_gates[i]
+        #     if i < num_repr - 1:
+        #         gates_normalized.append(gate * unhalted_gates)
+        #         unhalted_gates = unhalted_gates * (1 - gate)
+        #     else:
+        #         # Last step gets the remainder to ensure sum = 1
+        #         gates_normalized.append(unhalted_gates)
+
+        # gates_normalized = torch.stack(gates_normalized, dim=0) # shape: num_representations, batch, seq_len, n_embd
+        # self.current_gates_normalized = [gates_normalized[i] for i in range(len(representations))]
+        # for i, h in enumerate(representations):
+        #     combined_h = combined_h + gates_normalized[i] * h
+
+        gates_stack = torch.stack([self.current_gates[i] for i in range(len(representations))], dim=0) # shape: num_representations, batch, seq_len, n_embd
+        gates_normalized = gates_stack / (gates_stack.sum(dim=0, keepdim=True) + 1e-8) # shape: num_representations, batch, seq_len, n_embd
         self.current_gates_normalized = [gates_normalized[i] for i in range(len(representations))]
         for i, h in enumerate(representations):
             combined_h = combined_h + gates_normalized[i] * h
@@ -1888,6 +1912,39 @@ class GPT2LLM(NNModel):
             
             self.halt_value_stats[int(iter_idx)].append(halt_signal)
 
+    @staticmethod
+    def _get_gate_mean_for_logging(gate_value: Any) -> torch.Tensor:
+        """Return a scalar tensor mean for a gate value used in logging."""
+        if gate_value is None:
+            return torch.tensor(0.0)
+        if isinstance(gate_value, torch.Tensor):
+            return gate_value.float().mean()
+        return torch.tensor(float(gate_value))
+
+    def _normalize_gate_values_for_logging(
+        self,
+        gate_values: Union[dict[int, Any], list[Any]],
+        max_iters: int,
+    ) -> list[torch.Tensor]:
+        """
+        Normalize scalar gate means across iterations.
+
+        This preserves ordering of logged gate means (if gate_i > gate_j, then norm_i > norm_j)
+        for the same logging step.
+        """
+        gate_means = []
+        for iter_idx in range(max_iters):
+            value = None
+            if isinstance(gate_values, dict) and iter_idx in gate_values:
+                value = gate_values[iter_idx]
+            elif isinstance(gate_values, list) and iter_idx < len(gate_values):
+                value = gate_values[iter_idx]
+            gate_means.append(self._get_gate_mean_for_logging(value))
+
+        gates_tensor = torch.stack(gate_means)
+        gates_tensor = gates_tensor / (gates_tensor.sum() + 1e-8)
+        return [gates_tensor[i] for i in range(max_iters)]
+
     def record_gate_stats(self, gate_values_dict, layer_idx, max_iters):
         if not self.training:
             return
@@ -1895,9 +1952,9 @@ class GPT2LLM(NNModel):
         for iter_idx in range(max_iters):
             gate_val = 0.0
             if isinstance(gate_values_dict, dict) and iter_idx in gate_values_dict:
-                gate_val = 0.0 if gate_values_dict[iter_idx] is None else gate_values_dict[iter_idx].mean().item()
+                gate_val = self._get_gate_mean_for_logging(gate_values_dict[iter_idx]).item()
             elif isinstance(gate_values_dict, list) and iter_idx < len(gate_values_dict):
-                gate_val = 0.0 if gate_values_dict[iter_idx] is None else gate_values_dict[iter_idx].mean().item()
+                gate_val = self._get_gate_mean_for_logging(gate_values_dict[iter_idx]).item()
             
             gate_key = f"gate_{iter_idx}"
             if gate_key not in self.gate_stats:
@@ -1918,9 +1975,9 @@ class GPT2LLM(NNModel):
         for iter_idx in range(max_iters):
             gate_val = 0.0
             if isinstance(gate_values_normalized_dict, dict) and iter_idx in gate_values_normalized_dict:
-                gate_val = 0.0 if gate_values_normalized_dict[iter_idx] is None else gate_values_normalized_dict[iter_idx].mean().item()
+                gate_val = self._get_gate_mean_for_logging(gate_values_normalized_dict[iter_idx]).item()
             elif isinstance(gate_values_normalized_dict, list) and iter_idx < len(gate_values_normalized_dict):
-                gate_val = 0.0 if gate_values_normalized_dict[iter_idx] is None else gate_values_normalized_dict[iter_idx].mean().item()
+                gate_val = self._get_gate_mean_for_logging(gate_values_normalized_dict[iter_idx]).item()
             
             gate_key = f"gate_{iter_idx}_normalized"
             if gate_key not in self.gate_normalized_stats:
@@ -2050,7 +2107,12 @@ class GPT2LLM(NNModel):
                         h = output["output"]
 
                     self.record_gate_stats(block.combined_representation_block.current_gates, layer_idx, block.max_recurrence)
-                    self.record_gate_normalized_stats(block.combined_representation_block.current_gates_normalized, layer_idx, block.max_recurrence) #TODO
+                    # For logging, normalize scalar gate means across iterations so trends remain comparable.
+                    normalized_gates_for_logging = self._normalize_gate_values_for_logging(
+                        block.combined_representation_block.current_gates,
+                        block.max_recurrence,
+                    )
+                    self.record_gate_normalized_stats(normalized_gates_for_logging, layer_idx, block.max_recurrence)
 
                     self.record_halt_signal_stats(p_n_list)
                     current_gates = block.combined_representation_block.current_gates
