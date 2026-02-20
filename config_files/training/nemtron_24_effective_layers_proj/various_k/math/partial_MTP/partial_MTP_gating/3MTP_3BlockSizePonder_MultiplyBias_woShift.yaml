@@ -406,6 +406,7 @@ model_raw:
     lambda_ponder: 0.5 # 1/2
     gates_bias: [0.55, -5.0, -5.0] # Set the biases for the gates (one for each gate).
     multiply_bias: true
+    do_shifted_input: false
 
 lr_scheduler:
   component_key: scheduler
@@ -476,7 +477,7 @@ evaluation_subscriber:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_MATH_PartialMTP_Gating
     mode: ${settings.wandb_mode}
-    experiment_id: LinearStyleGateNorm_MtpSch_MultiplyBias=${model_raw.config.gates_bias}_LambdaP=${model_raw.config.lambda_ponder}_PonderLoss_HaltingTh=${model_raw.config.halt_threshold}_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_recurEmbed=${model_raw.config.use_recurrence_embedding}_${settings.experiment_id}
+    experiment_id: LinearStyleGateNorm_woShift_MultiplyBias=${model_raw.config.gates_bias}_LambdaP=${model_raw.config.lambda_ponder}_PonderLoss_HaltingTh=${model_raw.config.halt_threshold}_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_recurEmbed=${model_raw.config.use_recurrence_embedding}_${settings.experiment_id}
     tags: [257M, Partial_MTP, 2Token, GradProj]
     directory: ${settings.wandb_path}
     config_file_path: ${settings.config_file_path}
