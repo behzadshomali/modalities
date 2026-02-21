@@ -402,6 +402,8 @@ class GPT2LLMConfig(BaseModel):
     lambda_ponder: float = 0.2
     gates_bias: Optional[List[float]] = None
     multiply_bias: bool = False
+    do_shifted_input: bool = True
+    future_masking_prob: float = 0.0
 
     @model_validator(mode="after")
     def check_divisibility(self) -> "GPT2LLMConfig":
@@ -908,7 +910,9 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         halt_threshold: Optional[float] = None,
         lambda_ponder: float = 0.2,
         gates_bias: Optional[List[float]] = None,
-        multiply_bias: bool = False
+        multiply_bias: bool = False,
+        do_shifted_input: bool = True,
+        future_masking_prob: float = 0.0,
     ):
         """
         Initializes the GroupRecursiveGPT2MTPBlock.
@@ -920,6 +924,12 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
                 If set to -1, backpropagation is done through all recurrences. Default is -1.
             sample_iterations (bool): Whether to sample the number of recurrences during training. Defaults to False.
             gates_bias (Optional[List[float]]): Optional list of biases for the gates. Defaults to None.
+            do_shifted_input (bool): Whether to apply shifted input. Defaults to True.
+            future_masking_prob (float): Probability of replacing each real shifted future token
+                with its corresponding latent thought during training. Bridges the train-inference
+                gap by teaching the model to work with latent surrogates. 0.0 = no masking (default),
+                1.0 = always use latent thoughts (equivalent to inference behavior). Recommended:
+                start at 0.0 and anneal up to ~0.5 during training.
         Note:
             When using GroupRecursiveGPT2MTPBlock, the input tensor is feeded to the block max_recurrence (i.e. L) times. In other words,
             when max_recurrence=1, the GroupRecursiveGPT2MTPBlock behaves like a standard GPT2Block.
@@ -968,7 +978,8 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         self.latent_thoughts.data.normal_(mean=0.0, std=0.02) # initialize the latent thoughts similar to the rest of the model parameters
 
         self.lambda_ponder = lambda_ponder
-        
+        self.do_shifted_input = do_shifted_input
+        self.future_masking_prob = future_masking_prob
 
         # self._check_max_recurrence()
 
@@ -995,13 +1006,35 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         # if embd is not None:# and steps_done > 0: let's copy the input for the first iteration as well, so that the model can decide whether to use it or not
         prev_iter_embd = self.prev_iter_embd_norm(prev_iter_embd)
         
-        # embd length: seq_len - step_done
-        embd = embd[:, steps_done: , :] # batch, seq_len - steps_done, embd_dim
-        # latent thought shape: steps_done, embd_dim --> batch, steps_done, embd_dim
-        batch_size = embd.size(0)
-        latent_thoughts = self.latent_thoughts[:steps_done].unsqueeze(0).repeat(batch_size, 1, 1)
-        embd = torch.cat([embd, latent_thoughts], dim=1).to(prev_iter_embd.dtype) # seq_len - steps_done + steps_done, embd_dim
-        embd = self.embd_norm(embd)
+        if self.do_shifted_input:
+            # embd length: seq_len - step_done
+            embd = embd[:, steps_done: , :] # batch, seq_len - steps_done, embd_dim
+            # latent thought shape: steps_done, embd_dim --> batch, steps_done, embd_dim
+            batch_size = embd.size(0)
+            latent_thoughts = self.latent_thoughts[:steps_done].unsqueeze(0).repeat(batch_size, 1, 1)
+
+            # ── Scheduled future-token masking ──────────────────────────
+            # During training, randomly replace real shifted future tokens with a
+            # learnable latent thought (the same surrogates the model sees at inference
+            # for positions without real future context).  This teaches the model to
+            # produce good representations regardless of whether it has access to the
+            # actual future token or must rely on a latent thought.
+            # At step r there are r available latent thoughts (indices 0..r-1),
+            # so each masked position gets a randomly chosen one of those r surrogates.
+            if self.training and self.future_masking_prob > 0.0 and steps_done > 0:
+                num_real = embd.size(1)  # positions with real shifted tokens
+                # Per-position Bernoulli mask: True → replace with a latent thought
+                mask = torch.rand(batch_size, num_real, device=embd.device) < self.future_masking_prob
+                # For each masked position, randomly pick one of the r available latent thoughts
+                latent_indices = torch.randint(0, int(steps_done), (batch_size, num_real), device=embd.device)
+                surrogates = self.latent_thoughts[latent_indices]  # (batch, num_real, n_embd)
+                mask = mask.unsqueeze(-1)  # (batch, num_real, 1)
+                embd = torch.where(mask, surrogates.to(embd.dtype), embd)
+
+            embd = torch.cat([embd, latent_thoughts], dim=1).to(prev_iter_embd.dtype) # seq_len - steps_done + steps_done, embd_dim
+            embd = self.embd_norm(embd)
+        else:
+            embd = self.embd_norm(embd)
         
         x = torch.cat([embd, prev_iter_embd], dim=-1).to(prev_iter_embd.dtype)
         x = self.proj(x)
@@ -1116,7 +1149,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
                 )
                 
 
-                # Halting probability (lambda_n)
+                # Halting probab∂ility (lambda_n)
                 lambda_n = self.halt_block(combined_output)
 
                 # # Force halt at last step
@@ -1558,7 +1591,9 @@ class GPT2LLM(NNModel):
         halt_threshold: Optional[float] = 1.0,
         lambda_ponder: float = 0.2,
         gates_bias: Optional[List[float]] = None,
-        multiply_bias: bool = False
+        multiply_bias: bool = False,
+        do_shifted_input: bool = True,
+        future_masking_prob: float = 0.0,
     ):
         """
         Initializes the GPT2LLM object.
@@ -1592,6 +1627,7 @@ class GPT2LLM(NNModel):
             enforce_swiglu_hidden_dim_multiple_of (int): Enforces
                 the hidden dimension in the SwiGLU layer to be a multiple of this value.
                 Note that this is only relevant if the activation_type is SwiGLU. Defaults to 256.
+            do_shifted_input (bool): Whether to apply shifted input. Defaults to True.
         """
         weight_decay_groups = {
             "linear": [".attn", ".mlp", ".lm_head.weight"],
@@ -1623,6 +1659,8 @@ class GPT2LLM(NNModel):
         self.lambda_ponder = lambda_ponder
         self.gates_bias = gates_bias
         self.multiply_bias = multiply_bias
+        self.do_shifted_input = do_shifted_input
+        self.future_masking_prob = future_masking_prob
         
         if return_each_recurrence_output:
             # if (len(recurrent_blocks_indices) != 1 or len(recurrent_blocks_indices[0]) != n_layer):
@@ -1753,6 +1791,8 @@ class GPT2LLM(NNModel):
                         lambda_ponder=lambda_ponder,
                         gates_bias=gates_bias,
                         multiply_bias=multiply_bias,
+                        do_shifted_input=do_shifted_input,
+                        future_masking_prob=future_masking_prob,
                         **block_arguments
                     )
             elif block_type in [BlockTypes.COMBINED_REPRESENTATION, BlockTypes.HALT]:
@@ -2089,10 +2129,6 @@ class GPT2LLM(NNModel):
                     # PonderNet setup
                     batch_size = h.size(0)
                     seq_len = h.size(1)
-                    unhalted_prob = torch.ones(batch_size, seq_len, device=h.device)
-                    ponder_h = torch.zeros_like(h)
-                    # p_n_list = []
-                    gates = {}
 
                     # for r in range(block.max_recurrence):
                     output, ponder_regularization_losses, p_n_list = block(
@@ -2117,7 +2153,7 @@ class GPT2LLM(NNModel):
                     self.record_halt_signal_stats(p_n_list)
                     current_gates = block.combined_representation_block.current_gates
                     current_gates_normalized = block.combined_representation_block.current_gates_normalized
-                    block.combined_representation_block.reset_current_gates()
+                    # block.combined_representation_block.reset_current_gates()
 
                 else:
                     output = block(h, tokens_repres=tokens_repres)

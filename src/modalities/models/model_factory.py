@@ -594,6 +594,8 @@ class GPT2ModelFactory:
         lambda_ponder: Optional[float] = None,
         gates_bias: Optional[List[float]] = None,
         multiply_bias: Optional[bool] = False,
+        do_shifted_input: Optional[bool] = True,
+        future_masking_prob: Optional[float] = 0.0,
     ) -> GPT2LLM:
         config = dict(
             sample_key=sample_key,
@@ -633,6 +635,8 @@ class GPT2ModelFactory:
             lambda_ponder=lambda_ponder,
             gates_bias=gates_bias,
             multiply_bias=multiply_bias,
+            do_shifted_input=do_shifted_input,
+            future_masking_prob=future_masking_prob,
         )
         if use_meta_device and use_weight_tying:
             raise ValueError(
