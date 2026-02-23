@@ -23,10 +23,6 @@ TASKS_TO_RUN = [
     "modalities:base_easy:qa_rc",
     "modalities:base_easy:code_bpb",
     "modalities:base_easy:qa_bpb",
-    # "modalities:base_easy:math_ac",
-    
-    # "basic_skills:rc::olmes",
-    # "basic_skills:rc:bpb::olmes"
 ]
 
 # 2. LIMIT
@@ -37,24 +33,70 @@ BATCH_SIZE = 8
 
 # 4. MAPPING:
 FOLDER_MAPPING = {
-    ## "folder_unique_identifier" : "wandb_run_id"
-    # "2026-02-11__10-36-48_abff36d0a7122c6b": "usbeeci5", # baseline
-    # "2026-02-11__16-28-52_b6df3e76ae591a56": "efniolfw"
-    # "2026-02-11__14-19-13_b6df3e76ae591a56": "5jh562ey"
-    # "2026-02-13__16-30-25_5c39a717dcaa5422": "oyc9aqld",
-    # "2026-02-13__16-26-16_93878c455150a246": "gwtf33ol",
-    # "2026-02-13__16-11-06_2519d6a77d994c97": "6lkwm5bu",
-    # "2026-02-13__16-10-36_6995ab4a053107ec": "ljbcigeo",
-    # "2026-02-15__19-31-28_6995ab4a053107ec": "v5zeu8gq"
-    "2026-02-17__17-44-01_304a053dc87afbb6": "0hpuqurm",
+#     ## "folder_unique_identifier" : "wandb_run_id"
+#     # "2026-02-11__10-36-48_abff36d0a7122c6b": "usbeeci5", # baseline
+#     # "2026-02-11__16-28-52_b6df3e76ae591a56": "efniolfw"
+#     # "2026-02-11__14-19-13_b6df3e76ae591a56": "5jh562ey"
+#     # "2026-02-13__16-30-25_5c39a717dcaa5422": "oyc9aqld",
+#     # "2026-02-13__16-26-16_93878c455150a246": "gwtf33ol",
+#     # "2026-02-13__16-11-06_2519d6a77d994c97": "6lkwm5bu",
+#     # "2026-02-13__16-10-36_6995ab4a053107ec": "ljbcigeo",
+#     # "2026-02-15__19-31-28_6995ab4a053107ec": "v5zeu8gq"
+#     "2026-02-17__17-44-01_304a053dc87afbb6": "0hpuqurm",
     "2026-02-17__14-33-27_304a053dc87afbb6": "6lutihak"
 }
+
+WANDB_FOLDERS = [
+    # "run-20260220_204436-0ylladgq"
+]
+
+def get_run_id_from_wandb_folder(folder_name):
+    return folder_name.split("-")[-1]
+
+def get_folder_for_run_id(run_name):
+    # ..._recurEmbed=True_2026-02-15__19-31-28_6995ab4a053107ec --> 2026-02-15__19-31-28_6995ab4a053107ec
+    folder_name = "_".join(run_name.split("_")[-4:])
+    return folder_name
 
 def get_run_id_for_folder(folder_name):
     for key, run_id in FOLDER_MAPPING.items():
         if key in folder_name:
             return run_id
     return None
+
+
+def resolve_checkpoint_folder_path(folder_hint):
+    folder_path = Path(folder_hint)
+    if folder_path.exists():
+        return folder_path
+
+    rooted_path = Path(CHECKPOINTS_ROOT) / folder_hint
+    if rooted_path.exists():
+        return rooted_path
+
+    return None
+
+
+def build_eval_targets():
+    """
+    Build unified eval targets as tuples of:
+    (run_id, checkpoint_folder_hint, source_label)
+    """
+    targets = []
+    seen = set()
+
+    for folder_name, run_id in FOLDER_MAPPING.items():
+        if run_id and run_id not in seen:
+            targets.append((run_id, folder_name, f"mapping:{folder_name}"))
+            seen.add(run_id)
+
+    for wandb_folder in WANDB_FOLDERS:
+        run_id = get_run_id_from_wandb_folder(wandb_folder)
+        if run_id and run_id not in seen:
+            targets.append((run_id, None, f"wandb_folder:{wandb_folder}"))
+            seen.add(run_id)
+
+    return targets
 
 def get_step_from_subfolder(subfolder_name):
     match = re.search(r"seen_steps_(\d+)", subfolder_name)
@@ -126,35 +168,47 @@ def build_summary_metrics(metrics_to_log):
 
     return summary_metrics
 
-def evaluate_model_folder(model_folder_path):
-    folder_name = model_folder_path.name
-    run_id = get_run_id_for_folder(folder_name)
-    
-    if not run_id:
-        return
-
-    print(f"\n=== Processing: {folder_name} ===")
-    print(f"    -> Mapped to WandB Run ID: {run_id}")
-
+def get_checkpoints_for_folder(folder_path):
     # 1. Config & Checkpoints
+    if isinstance(folder_path, str):
+        folder_path = Path(folder_path)
     config_path = None
-    yaml_files = list(model_folder_path.glob("*.yaml"))
+    yaml_files = list(folder_path.glob("*.yaml"))
     if yaml_files: config_path = str(yaml_files[0])
 
     checkpoints = []
-    for item in model_folder_path.iterdir():
+    for item in folder_path.iterdir():
         if item.is_dir() and "seen_steps" in item.name:
             step = get_step_from_subfolder(item.name)
             if step is not None:
                 checkpoints.append((step, item))
     checkpoints.sort(key=lambda x: x[0])
+    return config_path, checkpoints
 
-    if not checkpoints: return
-
+def evaluate_run_target(run_id, checkpoint_folder_hint=None, source_label=None):
     # 2. INITIALIZE WANDB (With Custom X-Axis Fix)
     try:
-        wandb.init(id=run_id, project=PROJECT, entity=ENTITY, resume="must", reinit=True)
-        print(f"    -> CONNECTED: {wandb.run.url}") 
+        run = wandb.init(id=run_id, project=PROJECT, entity=ENTITY, resume="must", reinit=True)
+        print(f"\n=== Processing run_id={run_id} ({source_label or 'unknown_source'}) ===")
+        print(f"    -> CONNECTED: {wandb.run.url}")
+        
+        run_name = run.name
+        if checkpoint_folder_hint:
+            checkpoint_folder_path = resolve_checkpoint_folder_path(checkpoint_folder_hint)
+        else:
+            inferred_folder_name = get_folder_for_run_id(run_name)
+            checkpoint_folder_path = resolve_checkpoint_folder_path(inferred_folder_name)
+
+        if checkpoint_folder_path is None:
+            print("    !!! Could not resolve checkpoint folder. Skipping run.")
+            wandb.finish()
+            return
+
+        config_path, checkpoints = get_checkpoints_for_folder(checkpoint_folder_path)
+        if not checkpoints:
+            print("    !!! No valid checkpoints found in this folder. Skipping.")
+            wandb.finish()
+            return
         
         # Define X-Axis
         wandb.define_metric("seen_steps")
@@ -203,8 +257,8 @@ def evaluate_model_folder(model_folder_path):
                 traceback.print_exc()
                 continue
 
-        # --- LOGGING ---
-        if eval_output:
+        # # --- LOGGING ---
+        # if eval_output:
             metrics_to_log = parse_olmes_results(eval_output)
             
             if metrics_to_log:
@@ -240,8 +294,15 @@ def evaluate_model_folder(model_folder_path):
 if __name__ == "__main__":
     # Ensure benchmark root exists
     os.makedirs(BENCHMARK_ROOT, exist_ok=True)
-    
-    root = Path(CHECKPOINTS_ROOT)
-    for item in root.iterdir():
-        if item.is_dir():
-            evaluate_model_folder(item)
+
+    targets = build_eval_targets()
+    if not targets:
+        print("No evaluation targets found. Populate FOLDER_MAPPING and/or WANDB_FOLDERS.")
+        sys.exit(0)
+
+    for run_id, checkpoint_folder_hint, source_label in targets:
+        evaluate_run_target(
+            run_id=run_id,
+            checkpoint_folder_hint=checkpoint_folder_hint,
+            source_label=source_label,
+        )
