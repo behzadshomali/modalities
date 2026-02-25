@@ -393,6 +393,7 @@ class GPT2LLMConfig(BaseModel):
     use_LNS: bool = False
     track_recurrence_embd_similarity: bool = False
     return_each_recurrence_output: bool = False
+    return_each_recurrence_logits_entropy: bool = False
     separate_lm_head_norm: bool = False
     use_last_iteration_output_as_final: bool = True
     use_combined_representation: bool = False
@@ -1373,6 +1374,7 @@ class GPT2LLM(NNModel):
         use_LNS: bool = False,
         track_recurrence_embd_similarity: bool = False,
         return_each_recurrence_output: bool = False,
+        return_each_recurrence_logits_entropy: bool = False,
         separate_lm_head_norm: bool = False,
         use_last_iteration_output_as_final: bool = True,
         use_combined_representation: bool = False,
@@ -1433,6 +1435,7 @@ class GPT2LLM(NNModel):
         self.use_LNS = use_LNS
         self.track_recurrence_embd_similarity = track_recurrence_embd_similarity
         self.return_each_recurrence_output = return_each_recurrence_output
+        self.return_each_recurrence_logits_entropy = return_each_recurrence_logits_entropy
         self.separate_lm_head_norm = separate_lm_head_norm
         self.use_last_iteration_output_as_final = use_last_iteration_output_as_final
         self.use_combined_representation = use_combined_representation
@@ -1441,7 +1444,7 @@ class GPT2LLM(NNModel):
         self.do_shifted_input = do_shifted_input
         self.future_masking_prob = future_masking_prob
         
-        if return_each_recurrence_output:
+        if return_each_recurrence_logits_entropy:
             self.recurrence_logits_entropy_stats = {}
 
         if track_recurrence_embd_similarity:
@@ -1943,8 +1946,9 @@ class GPT2LLM(NNModel):
             final_output["recurrence_embedding_cosine_similarity"] = torch.stack(recurrence_cosine_similarities).mean() if recurrence_cosine_similarities else torch.tensor(0.0)
             final_output["recurrence_embedding_mse_similarity"] = torch.stack(recurrence_mse_similarities).mean() if recurrence_mse_similarities else torch.tensor(0.0)
         if self.return_each_recurrence_output:
-            final_output["each_recurrence_entropy"] = []
             final_output["each_recurrence_logits"] = []
+            if self.return_each_recurrence_logits_entropy:
+                final_output["each_recurrence_entropy"] = []
             for r in range(len(each_recurrence_outputs)-1):
                 if self.separate_lm_head_norm:
                     o = self.transformer.lm_head_norm[r](each_recurrence_outputs[r])
@@ -1953,31 +1957,28 @@ class GPT2LLM(NNModel):
                 o = self.transformer.lm_head(o) if hasattr(self.transformer, "lm_head") else o
                 final_output["each_recurrence_logits"].append(o)
                 
-                entropy = get_logits_entropy(o)
-                final_output["each_recurrence_entropy"].append(entropy)
-                
-                if self.training:
-                    self.record_recurrence_logits_entropy_stats(r, entropy.detach())
+                if self.return_each_recurrence_logits_entropy:
+                    entropy = get_logits_entropy(o)
+                    final_output["each_recurrence_entropy"].append(entropy)
+                    if self.training:
+                        self.record_recurrence_logits_entropy_stats(r, entropy.detach())
             
             final_output["each_recurrence_logits"].append(h) # add the final output as well
             final_output["each_recurrence_logits"] = torch.stack(final_output["each_recurrence_logits"])
             
-            entropy = get_logits_entropy(h)
-            final_output["each_recurrence_entropy"].append(entropy) # add the final output as well
-            final_output["each_recurrence_entropy"] = torch.stack(final_output["each_recurrence_entropy"])
-            if self.training:
-                self.record_recurrence_logits_entropy_stats(self.max_recurrences[-1]-1, entropy)
+            if self.return_each_recurrence_logits_entropy:
+                entropy = get_logits_entropy(h)
+                final_output["each_recurrence_entropy"].append(entropy) # add the final output as well
+                final_output["each_recurrence_entropy"] = torch.stack(final_output["each_recurrence_entropy"])
+                if self.training:
+                    self.record_recurrence_logits_entropy_stats(self.max_recurrences[-1]-1, entropy)
         
         final_output["gates"] = current_gates if self.use_combined_representation else None
         final_output["gates_normalized"] = current_gates_normalized if self.use_combined_representation else None
         
         if self.use_combined_representation:
             final_output["pn_tensor"] = output["pn_tensor"] 
-            missing_gates_cnt = len(final_output["gates"]) - len(final_output["gates_normalized"])
-            for _ in range(missing_gates_cnt):
-                final_output["gates_normalized"].append(torch.zeros_like(final_output["gates"][0]))
-
-        
+            
         if self.use_last_iteration_output_as_final:
             final_output["logits"] = h
         else:
