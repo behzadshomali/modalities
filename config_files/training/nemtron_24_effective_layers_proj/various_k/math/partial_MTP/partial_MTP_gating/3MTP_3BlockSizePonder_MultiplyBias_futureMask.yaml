@@ -322,8 +322,8 @@ fsdp_model:
   variant_key: fsdp2_wrapped
   config:
     model:
-      # instance_key: compiled_model
-      instance_key: model_raw
+      instance_key: compiled_model
+      # instance_key: model_raw
       pass_type: BY_REFERENCE
     device_mesh:
       instance_key: device_mesh
@@ -333,14 +333,14 @@ fsdp_model:
       reduce_dtype: BF_16
     block_names: [GPT2Block]
 
-# compiled_model:
-#   component_key: model
-#   variant_key: compiled
-#   config:
-#     model:
-#       instance_key: model_raw
-#       pass_type: BY_REFERENCE
-#     block_names: [GPT2Block]
+compiled_model:
+  component_key: model
+  variant_key: compiled
+  config:
+    model:
+      instance_key: model_raw
+      pass_type: BY_REFERENCE
+    block_names: [GPT2Block,CombinedRepresentationGPT2Block,HaltGPT2Block] #GroupRecursiveGPT2MTPBlock
 
 model_raw:
   component_key: model
