@@ -398,7 +398,7 @@ model_raw:
     sample_iterations: false
     use_recurrence_embedding: true
     use_LNS: true
-    penalize_recurrence_embedding_similarity: false
+    track_recurrence_embd_similarity: false
     return_each_recurrence_output: true
     separate_lm_head_norm: false
     use_last_iteration_output_as_final: false

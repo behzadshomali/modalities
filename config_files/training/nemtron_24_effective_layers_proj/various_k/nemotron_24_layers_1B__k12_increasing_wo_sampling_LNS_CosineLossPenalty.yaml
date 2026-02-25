@@ -323,7 +323,7 @@ model_raw:
     sample_iterations: false
     use_recurrence_embedding: true
     use_LNS: true
-    penalize_recurrence_embedding_similarity: true
+    track_recurrence_embd_similarity: true
 
 lr_scheduler:
   component_key: scheduler

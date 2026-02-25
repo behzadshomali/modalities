@@ -394,7 +394,7 @@ model_raw: # 225932160
     sample_iterations: false
     use_recurrence_embedding: false
     use_LNS: true
-    penalize_recurrence_embedding_similarity: false
+    track_recurrence_embd_similarity: false
     return_each_recurrence_output: false
 
 lr_scheduler:

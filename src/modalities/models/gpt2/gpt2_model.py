@@ -393,7 +393,7 @@ class GPT2LLMConfig(BaseModel):
     seed: Optional[int] = None
     enforce_swiglu_hidden_dim_multiple_of: int = 256
     use_LNS: bool = False
-    penalize_recurrence_embedding_similarity: bool = False
+    track_recurrence_embd_similarity: bool = False
     return_each_recurrence_output: bool = False
     separate_lm_head_norm: bool = False
     use_last_iteration_output_as_final: bool = True
@@ -903,7 +903,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         sample_iterations: bool = False,
         use_recurrence_embedding: bool = False,
         recurrence_embedding_base_freq: float = 10000.0,
-        penalize_recurrence_embedding_similarity: bool = False,
+        track_recurrence_embd_similarity: bool = False,
         return_each_recurrence_output: bool = False,
         use_combined_representation: bool = False,
         halt_threshold: Optional[float] = None,
@@ -947,8 +947,8 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         if use_recurrence_embedding:
             self.recurrence_embd = SinusoidalRecurrenceEmbedding(n_embd, base_freq=recurrence_embedding_base_freq)
         
-        self.penalize_recurrence_embedding_similarity = penalize_recurrence_embedding_similarity
-        if penalize_recurrence_embedding_similarity:
+        self.track_recurrence_embd_similarity = track_recurrence_embd_similarity
+        if track_recurrence_embd_similarity:
             self.cos = nn.CosineSimilarity(dim=-1)
 
         self.return_each_recurrence_output = return_each_recurrence_output # should be used only when iterating over the entire model
@@ -1098,7 +1098,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         else:
             recurrences = self.max_recurrence
         
-        if self.penalize_recurrence_embedding_similarity:
+        if self.track_recurrence_embd_similarity:
             cosine_similarities = []
             mse_similarities = []
         
@@ -1129,7 +1129,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             if self.return_each_recurrence_output:
                 all_recurrence_outputs.append(x)
 
-            if self.penalize_recurrence_embedding_similarity:
+            if self.track_recurrence_embd_similarity:
                 # cosine similarity between x_before and x_after
                 cosine_similarity = (self.cos(x_before.view(x_before.size(0), -1), x_after.view(x_after.size(0), -1)) + 1.0 ) / 2.0 # shift to [0, 1]
                 cosine_similarities.append(cosine_similarity.mean())
@@ -1224,7 +1224,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         if self.return_each_recurrence_output:
             output["recurrence_outputs"] = all_recurrence_outputs
         
-        if self.penalize_recurrence_embedding_similarity:
+        if self.track_recurrence_embd_similarity:
             output["cosine_similarity"] = torch.stack(cosine_similarities).mean()
             output["mse_similarity"] = torch.stack(mse_similarities).mean()
 
@@ -1389,7 +1389,7 @@ class GroupRecursiveGPT2Block(nn.Module):
         sample_iterations: bool = False,
         use_recurrence_embedding: bool = False,
         recurrence_embedding_base_freq: float = 10000.0,
-        penalize_recurrence_embedding_similarity: bool = False,
+        track_recurrence_embd_similarity: bool = False,
         return_each_recurrence_output: bool = False,
     ):
         """
@@ -1421,8 +1421,8 @@ class GroupRecursiveGPT2Block(nn.Module):
         if use_recurrence_embedding:
             self.recurrence_embd = SinusoidalRecurrenceEmbedding(n_embd, base_freq=recurrence_embedding_base_freq)
         
-        self.penalize_recurrence_embedding_similarity = penalize_recurrence_embedding_similarity
-        if penalize_recurrence_embedding_similarity:
+        self.track_recurrence_embd_similarity = track_recurrence_embd_similarity
+        if track_recurrence_embd_similarity:
             self.cos = nn.CosineSimilarity(dim=-1)
 
         self.return_each_recurrence_output = return_each_recurrence_output # should be used only when iterating over the entire model
@@ -1502,7 +1502,7 @@ class GroupRecursiveGPT2Block(nn.Module):
         else:
             recurrences = self.max_recurrence
         
-        if self.penalize_recurrence_embedding_similarity:
+        if self.track_recurrence_embd_similarity:
             cosine_similarities = []
             mse_similarities = []
         
@@ -1521,7 +1521,7 @@ class GroupRecursiveGPT2Block(nn.Module):
                 all_recurrence_outputs.append(x)
 
 
-            if self.penalize_recurrence_embedding_similarity:
+            if self.track_recurrence_embd_similarity:
                 # cosine similarity between x_before and x_after
                 cosine_similarity = (self.cos(x_before.view(x_before.size(0), -1), x_after.view(x_after.size(0), -1)) + 1.0 ) / 2.0 # shift to [0, 1]
                 cosine_similarities.append(cosine_similarity.mean())
@@ -1535,7 +1535,7 @@ class GroupRecursiveGPT2Block(nn.Module):
         if self.return_each_recurrence_output:
             output["recurrence_outputs"] = all_recurrence_outputs
         
-        if self.penalize_recurrence_embedding_similarity:
+        if self.track_recurrence_embd_similarity:
             output["cosine_similarity"] = torch.stack(cosine_similarities).mean()
             output["mse_similarity"] = torch.stack(mse_similarities).mean()
             
@@ -1580,7 +1580,7 @@ class GPT2LLM(NNModel):
         seed: Optional[int] = None,
         enforce_swiglu_hidden_dim_multiple_of: int = 256,
         use_LNS: bool = False,
-        penalize_recurrence_embedding_similarity: bool = False,
+        track_recurrence_embd_similarity: bool = False,
         return_each_recurrence_output: bool = False,
         separate_lm_head_norm: bool = False,
         use_last_iteration_output_as_final: bool = True,
@@ -1646,7 +1646,7 @@ class GPT2LLM(NNModel):
         self.recurrence_usage_stats = {}
         self.processed_layers_in_this_run = 0
         self.use_LNS = use_LNS
-        self.penalize_recurrence_embedding_similarity = penalize_recurrence_embedding_similarity
+        self.track_recurrence_embd_similarity = track_recurrence_embd_similarity
         self.return_each_recurrence_output = return_each_recurrence_output
         self.separate_lm_head_norm = separate_lm_head_norm
         self.use_last_iteration_output_as_final = use_last_iteration_output_as_final
@@ -1666,7 +1666,7 @@ class GPT2LLM(NNModel):
             #     )
             self.recurrence_logits_entropy_stats = {}
 
-        if penalize_recurrence_embedding_similarity:
+        if track_recurrence_embd_similarity:
             self.recurrence_embedding_cosine_similarity_stats = {}
             self.recurrence_embedding_mse_similarity_stats = {} 
 
@@ -1773,7 +1773,7 @@ class GPT2LLM(NNModel):
                     n_embd=n_embd,
                     use_recurrence_embedding=use_recurrence_embedding,
                     recurrence_embedding_base_freq=recurrence_embedding_base_freq,
-                    penalize_recurrence_embedding_similarity=penalize_recurrence_embedding_similarity,
+                    track_recurrence_embd_similarity=track_recurrence_embd_similarity,
                     return_each_recurrence_output=return_each_recurrence_output
                 )
 
@@ -2153,7 +2153,7 @@ class GPT2LLM(NNModel):
                     output = block(h, tokens_repres=tokens_repres)
                     h = output["output"]
                 
-                if self.penalize_recurrence_embedding_similarity:
+                if self.track_recurrence_embd_similarity:
                     cosine_similarity = output["cosine_similarity"]
                     mse_similarity = output["mse_similarity"]
                     recurrence_cosine_similarities.append(cosine_similarity)
@@ -2175,7 +2175,7 @@ class GPT2LLM(NNModel):
                 if self.training:
                     self.record_recurrence_usage_stats(layer_idx, block)
             
-            if self.penalize_recurrence_embedding_similarity:
+            if self.track_recurrence_embd_similarity:
                 if self.training:
                     self.record_recurrence_embedding_similarity_stats(cosine_similarity, mse_similarity, layer_idx)
 
@@ -2191,7 +2191,7 @@ class GPT2LLM(NNModel):
         if ponder_regularization_losses:
             final_output["ponder_regularization_loss"] = torch.stack(ponder_regularization_losses).mean()
 
-        if self.penalize_recurrence_embedding_similarity:
+        if self.track_recurrence_embd_similarity:
             final_output["recurrence_embedding_cosine_similarity"] = torch.stack(recurrence_cosine_similarities).mean() if recurrence_cosine_similarities else torch.tensor(0.0)
             final_output["recurrence_embedding_mse_similarity"] = torch.stack(recurrence_mse_similarities).mean() if recurrence_mse_similarities else torch.tensor(0.0)
         if self.return_each_recurrence_output:
