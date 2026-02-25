@@ -387,7 +387,7 @@ model_raw: # 225932160
         eps: 1.0e-05
     use_weight_tying: false
     recurrent_blocks_indices: [[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]]
-    k_last_recurrence_gradient_backprops: -1 # -1 means the gradients for all steps will be propagated
+    
     recurrent_blocks_max_recurrences: 3
     
     use_recurrence_embedding: false

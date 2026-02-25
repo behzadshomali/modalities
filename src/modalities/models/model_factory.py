@@ -576,7 +576,6 @@ class GPT2ModelFactory:
         lm_head_norm_config: LayerNormWrapperConfig,
         use_weight_tying: bool,
         recurrent_blocks_indices: Optional[list[int]] = None,
-        k_last_recurrence_gradient_backprops: Optional[Union[int, list[int]]] = None,
         recurrent_blocks_max_recurrences: Optional[Union[int, list[int]]] = None,
         
         use_recurrence_embedding: Optional[bool] = False,
@@ -619,7 +618,6 @@ class GPT2ModelFactory:
             seed=seed,
             use_weight_tying=use_weight_tying,
             recurrent_blocks_indices=recurrent_blocks_indices,
-            k_last_recurrence_gradient_backprops=k_last_recurrence_gradient_backprops,
             recurrent_blocks_max_recurrences=recurrent_blocks_max_recurrences,
             use_recurrence_embedding=use_recurrence_embedding,
             recurrence_embedding_base_freq=recurrence_embedding_base_freq,

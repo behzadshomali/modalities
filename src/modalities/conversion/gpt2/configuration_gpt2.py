@@ -129,15 +129,12 @@ class GPT2Config(PretrainedConfig):
         mlp_bias=False,
         head_dim=None,
         recurrent_blocks_indices: list[int] = [],
-        
-        k_last_recurrence_gradient_backprops: int | None = None,
         recurrent_blocks_max_recurrences: int | None = None,
         use_recurrence_embedding: bool = False,
         **kwargs,
     ):
         # recurrent related variables
         self.recurrent_blocks_indices = recurrent_blocks_indices
-        self.k_last_recurrence_gradient_backprops = k_last_recurrence_gradient_backprops
         self.recurrent_blocks_max_recurrences = recurrent_blocks_max_recurrences
         self.use_recurrence_embedding = use_recurrence_embedding
 

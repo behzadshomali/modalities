@@ -76,7 +76,7 @@ model_raw:
     - - 7
       - 8
       - 9
-    k_last_recurrence_gradient_backprops: -1
+    
     
     recurrent_blocks_max_recurrences:
     - 3

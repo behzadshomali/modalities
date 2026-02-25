@@ -328,7 +328,6 @@ class RecursiveGPT2DecoderLayer(GradientCheckpointingLayer):
         super().__init__()
 
         # Recurrence related configs
-        self.k_last_recurrence_gradient_backprops = config.k_last_recurrence_gradient_backprops
         self.max_recurrence = config.recurrent_blocks_max_recurrences[ith_recursive_block]
 
         self.hidden_size = config.hidden_size
@@ -393,9 +392,6 @@ class RecursiveGPT2DecoderLayer(GradientCheckpointingLayer):
         recurrences = self.max_recurrence
     
         for r in range(recurrences):
-            if not self.k_last_recurrence_gradient_backprops == -1:
-                if r < recurrences - self.k_last_recurrence_gradient_backprops:  
-                    hidden_states = hidden_states.detach()
             hidden_states = step(hidden_states)
 
         return hidden_states#.to(type_)
@@ -406,7 +402,6 @@ class GroupRecursiveGPT2DecoderLayer(GradientCheckpointingLayer):
         super().__init__()
 
         # Recurrence related configs
-        self.k_last_recurrence_gradient_backprops = config.k_last_recurrence_gradient_backprops
         self.max_recurrence = config.recurrent_blocks_max_recurrences[ith_recursive_block]
         self.gpt2_blocks = nn.ModuleList(gpt2_blocks)
 
@@ -486,9 +481,6 @@ class GroupRecursiveGPT2DecoderLayer(GradientCheckpointingLayer):
         recurrences = self.max_recurrence
     
         for r in range(recurrences):
-            if not self.k_last_recurrence_gradient_backprops == -1:
-                if r < recurrences - self.k_last_recurrence_gradient_backprops:  
-                    hidden_states = hidden_states.detach()
             hidden_states = step(hidden_states, steps_done=torch.tensor(r+1, device=hidden_states.device))
 
         return hidden_states#.to(type_)

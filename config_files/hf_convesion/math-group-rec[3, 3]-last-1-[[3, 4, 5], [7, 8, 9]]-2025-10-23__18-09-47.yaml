@@ -283,7 +283,7 @@ model_raw:
         eps: 1.0e-05
     use_weight_tying: false
     recurrent_blocks_indices: [[3,4,5],[7,8,9]]
-    k_last_recurrence_gradient_backprops: -1 # -1 means the gradients for all steps will be propagated
+    
     
     recurrent_blocks_max_recurrences: [3, 3]
     
@@ -350,7 +350,7 @@ evaluation_subscriber:
     global_rank: ${settings.cuda_env.global_rank}
     project: modalities_recursive_model_5B-fineweb-edu
     mode: ONLINE
-    experiment_id: math-group-rec${model_raw.config.recurrent_blocks_max_recurrences}-last${model_raw.config.k_last_recurrence_gradient_backprops}-${model_raw.config.recurrent_blocks_indices}-${settings.experiment_id}
+    experiment_id: math-group-rec${model_raw.config.recurrent_blocks_max_recurrences}-${model_raw.config.recurrent_blocks_indices}-${settings.experiment_id}
     directory: /raid/s3/opengptx/behzad_shomali/wandb_storage
     config_file_path: ${settings.config_file_path}
 
