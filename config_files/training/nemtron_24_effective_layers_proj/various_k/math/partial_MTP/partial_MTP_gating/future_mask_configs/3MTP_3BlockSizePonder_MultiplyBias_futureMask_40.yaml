@@ -28,7 +28,7 @@ settings:
     enforce_last_step_evaluated: false
     enforce_last_step_checkpointed: false
   step_profile:
-    gradient_accumulation_steps: 10
+    gradient_accumulation_steps: 40
     local_train_micro_batch_size: 3
     sequence_length: 2048
     dp_degree:
@@ -250,11 +250,20 @@ checkpoint_saving:
 
 loss_fn:
   component_key: loss
-  variant_key: clm_recurrence_cosine_sim_penalty_loss
+  variant_key: clm_mtp_recurrence_loss_temporal_discounting_ponder
   config:
     target_key: ${settings.referencing_keys.target_key}
     prediction_key: ${settings.referencing_keys.prediction_key}
-    penalty_alpha: 0
+    mtp_prediction_key: each_recurrence_logits
+    mtp_lambda: 0.5  # Initial value (will be overridden by scheduler)
+    discount_factor: 1.0
+    ponder_weight: 0.05 # Initial value (will be overridden by scheduler)
+    # mtp_lambda_scheduler:
+    #   instance_key: mtp_lambda_scheduler
+    #   pass_type: BY_REFERENCE
+    # efficiency_lambda_scheduler:
+    #   instance_key: efficiency_lambda_scheduler
+    #   pass_type: BY_REFERENCE
 
 device_mesh:
   component_key: device_mesh
@@ -346,7 +355,7 @@ model_raw:
     n_layer: 12
     n_head_q: 32
     n_head_kv: 32
-    ffn_hidden: 4352
+    ffn_hidden: 4096
     n_embd: 1024
     dropout: 0.0
     bias: false
@@ -381,20 +390,23 @@ model_raw:
         normalized_shape: ${model_raw.config.n_embd}
         eps: 1.0e-05
     use_weight_tying: false
-    recurrent_blocks_indices: [[9,10,11]]
+    # recurrent_blocks_indices: [[1,2],[4,5],[7,8],[-10,-11]]
+    recurrent_blocks_indices: [[-9,-10,-11]]
     k_last_recurrence_gradient_backprops: -1 # -1 means the gradients for all steps will be propagated
-    recurrent_blocks_max_recurrences: 2
+    recurrent_blocks_max_recurrences: 3
     sample_iterations: false
     use_recurrence_embedding: true
     use_LNS: true
     penalize_recurrence_embedding_similarity: false
     return_each_recurrence_output: true
     separate_lm_head_norm: false
-    use_last_iteration_output_as_final: true
-    use_combined_representation: false
-    # halt_threshold: 0.5
-    # lambda_ponder: 0.66 # 2/3
-    # gates_bias: [3, -3]
+    use_last_iteration_output_as_final: false
+    use_combined_representation: true
+    halt_threshold: 0.5
+    lambda_ponder: 0.5 # 1/2
+    gates_bias: [0.55, -5.0, -5.0] # Set the biases for the gates (one for each gate).
+    multiply_bias: true
+    future_masking_prob: 0.4
 
 lr_scheduler:
   component_key: scheduler
@@ -419,34 +431,6 @@ std_scheduler:
     start_factor: 1
     end_factor: 0
     total_steps: ${settings.training_target.num_target_steps}
-
-# optimizer:
-#   component_key: optimizer
-#   variant_key: adafactor
-#   config:
-#     lr: 0.0005
-#     beta2_decay: -0.8
-#     eps: [null, 0.001]
-#     d: 1.0
-#     weight_decay: 0.1
-#     # weight_decay_groups_excluded: [embedding, layernorm]
-#     weight_decay_groups_excluded: []
-#     fsdp_model: 
-#       instance_key: fsdp_model
-#       pass_type: BY_REFERENCE
-
-# optimizer:
-#   component_key: optimizer
-#   variant_key: adam_w
-#   config:
-#     lr: 0.002121 #0.002953
-#     betas: [0.9, 0.95]
-#     eps: 1e-8
-#     weight_decay: 1e-1
-#     weight_decay_groups_excluded: []
-#     wrapped_model:
-#       instance_key: initialized_model
-#       pass_type: BY_REFERENCE
 
 optimizer:
   component_key: optimizer
@@ -493,17 +477,29 @@ evaluation_subscriber:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_MATH_PartialMTP_Gating
     mode: ${settings.wandb_mode}
-    experiment_id: LoopedBASELINE_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_recurEmbed=${model_raw.config.use_recurrence_embedding}_${settings.experiment_id}
+    experiment_id: LinearStyleGateNorm_mask${model_raw.config.future_masking_prob}_MultiplyBias=${model_raw.config.gates_bias}_LambdaP=${model_raw.config.lambda_ponder}_PonderLoss_HaltingTh=${model_raw.config.halt_threshold}_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_recurEmbed=${model_raw.config.use_recurrence_embedding}_${settings.experiment_id}
+    tags: [257M, Partial_MTP, 2Token, GradProj]
     directory: ${settings.wandb_path}
     config_file_path: ${settings.config_file_path}
 
-mtp_lambda_scheduler:
-  component_key: scheduler
-  variant_key: sigmoid_mtp_lambda
-  config:
-    start_value: 0.001
-    end_value: 0.5
-    steepness: 20.0
-    training_start_portion: 0.10
-    training_end_portion: 0.50
-    total_steps: ${settings.training_target.num_target_steps}
+# mtp_lambda_scheduler:
+#   component_key: scheduler
+#   variant_key: sigmoid_mtp_lambda
+#   config:
+#     start_value: 0.0
+#     end_value: 0.5
+#     steepness: 20.0
+#     training_start_portion: 0.15
+#     training_end_portion: 0.25
+#     total_steps: ${settings.training_target.num_target_steps}
+
+# efficiency_lambda_scheduler:
+#   component_key: scheduler
+#   variant_key: sigmoid_mtp_lambda
+#   config:
+#     start_value: 0.1
+#     end_value: 0.05
+#     steepness: 20.0
+#     training_start_portion: 0.0
+#     training_end_portion: 0.4
+#     total_steps: ${settings.training_target.num_target_steps}

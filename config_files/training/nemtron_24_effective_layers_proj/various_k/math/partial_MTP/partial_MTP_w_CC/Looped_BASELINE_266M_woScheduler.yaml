@@ -28,7 +28,7 @@ settings:
     enforce_last_step_evaluated: false
     enforce_last_step_checkpointed: false
   step_profile:
-    gradient_accumulation_steps: 10
+    gradient_accumulation_steps: 40
     local_train_micro_batch_size: 3
     sequence_length: 2048
     dp_degree:
@@ -85,58 +85,58 @@ train_dataset:
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part9.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-highQuality-sampled_data_part_9.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part10.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-highQuality-sampled_data_part_10.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part11.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-highQuality-sampled_data_part_11.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part12.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-highQuality-sampled_data_part_12.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part13.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-highQuality-sampled_data_part_13.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part14.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-highQuality-sampled_data_part_14.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part15.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-highQuality-sampled_data_part_15.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part16.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-highQuality-sampled_data_part_16.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
     - component_key: dataset
       variant_key: packed_mem_map_dataset_continuous
       config:
-        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part17.pbin
+        raw_data_path: ${settings.data_dir_math}/Nemotron-CC-highQuality-sampled_data_part_17.pbin
         sequence_length: ${settings.step_profile.sequence_length}
         sample_key:  ${settings.referencing_keys.sample_key}
-    - component_key: dataset
+    - component_key: dataset #math
       variant_key: packed_mem_map_dataset_continuous
       config:
         raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part18_eval.pbin
@@ -191,7 +191,7 @@ test_dataset:
     # - component_key: dataset
     #   variant_key: packed_mem_map_dataset_continuous
     #   config:
-    #     raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part19_eval.pbin
+    #     raw_data_path: ${settings.data_dir_math}/Nemotron-CC-highQuality-sampled_data_part19_eval.pbin
     #     sequence_length: ${settings.step_profile.sequence_length}
     #     sample_key:  ${settings.referencing_keys.sample_key}
 
@@ -250,11 +250,18 @@ checkpoint_saving:
 
 loss_fn:
   component_key: loss
-  variant_key: clm_recurrence_cosine_sim_penalty_loss
+  variant_key: clm_mtp_recurrence_loss_temporal_discounting
   config:
     target_key: ${settings.referencing_keys.target_key}
     prediction_key: ${settings.referencing_keys.prediction_key}
-    penalty_alpha: 0
+    mtp_prediction_key: each_recurrence_logits
+    mtp_lambda: 0.5  # Initial value (will be overridden by scheduler)
+    discount_factor: 1.0
+    perform_gradient_projection: false
+    monitor_gradient_conflicts: false
+    # mtp_lambda_scheduler:
+    #   instance_key: mtp_lambda_scheduler
+    #   pass_type: BY_REFERENCE
 
 device_mesh:
   component_key: device_mesh
@@ -491,19 +498,19 @@ evaluation_subscriber:
   variant_key: wandb
   config:
     global_rank: ${settings.cuda_env.global_rank}
-    project: nemotron_MATH_PartialMTP_Gating
+    project: nemotron_MATH_PartialMTP_Gating_CC
     mode: ${settings.wandb_mode}
-    experiment_id: LoopedBASELINE_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_recurEmbed=${model_raw.config.use_recurrence_embedding}_${settings.experiment_id}
+    experiment_id: NaiveMTP_LoopedBASELINE_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_recurEmbed=${model_raw.config.use_recurrence_embedding}_${settings.experiment_id}
     directory: ${settings.wandb_path}
     config_file_path: ${settings.config_file_path}
 
-mtp_lambda_scheduler:
-  component_key: scheduler
-  variant_key: sigmoid_mtp_lambda
-  config:
-    start_value: 0.001
-    end_value: 0.5
-    steepness: 20.0
-    training_start_portion: 0.10
-    training_end_portion: 0.50
-    total_steps: ${settings.training_target.num_target_steps}
+# mtp_lambda_scheduler:
+#   component_key: scheduler
+#   variant_key: sigmoid_mtp_lambda
+#   config:
+#     start_value: 0.001
+#     end_value: 0.5
+#     steepness: 20.0
+#     training_start_portion: 0.10
+#     training_end_portion: 0.50
+#     total_steps: ${settings.training_target.num_target_steps}
