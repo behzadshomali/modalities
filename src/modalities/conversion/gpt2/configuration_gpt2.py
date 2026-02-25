@@ -129,7 +129,7 @@ class GPT2Config(PretrainedConfig):
         mlp_bias=False,
         head_dim=None,
         recurrent_blocks_indices: list[int] = [],
-        sample_iterations: int | None = None,
+        
         k_last_recurrence_gradient_backprops: int | None = None,
         recurrent_blocks_max_recurrences: int | None = None,
         use_recurrence_embedding: bool = False,

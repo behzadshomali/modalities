@@ -578,7 +578,7 @@ class GPT2ModelFactory:
         recurrent_blocks_indices: Optional[list[int]] = None,
         k_last_recurrence_gradient_backprops: Optional[Union[int, list[int]]] = None,
         recurrent_blocks_max_recurrences: Optional[Union[int, list[int]]] = None,
-        sample_iterations: Optional[bool] = False,
+        
         use_recurrence_embedding: Optional[bool] = False,
         recurrence_embedding_base_freq: Optional[float] = 10000.0,
         use_meta_device: Optional[bool] = False,

@@ -387,7 +387,6 @@ class GPT2LLMConfig(BaseModel):
     recurrent_blocks_indices: Optional[Union[list[int], list[list[int]]]] = []
     k_last_recurrence_gradient_backprops: Optional[Union[int, list[int]]] = []
     recurrent_blocks_max_recurrences: Optional[Union[int, list[int]]] = 0
-    sample_iterations: Optional[bool] = False
     use_recurrence_embedding: Optional[bool] = False
     recurrence_embedding_base_freq: Optional[float] = 10000.0
     seed: Optional[int] = None
@@ -900,7 +899,6 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         max_recurrence: int,
         n_embd: int,
         k_last_recurrence_gradient_backprop: int = -1,
-        sample_iterations: bool = False,
         use_recurrence_embedding: bool = False,
         recurrence_embedding_base_freq: float = 10000.0,
         track_recurrence_embd_similarity: bool = False,
@@ -920,7 +918,6 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             max_recurrence (int): The maximum number of recurrences.
             k_last_recurrence_gradient_backprop (int): The number of last recurrences to backpropagate gradients through.
                 If set to -1, backpropagation is done through all recurrences. Default is -1.
-            sample_iterations (bool): Whether to sample the number of recurrences during training. Defaults to False.
             gates_bias (Optional[List[float]]): Optional list of biases for the gates. Defaults to None.
             do_shifted_input (bool): Whether to apply shifted input. Defaults to True.
             future_masking_prob (float): Probability of replacing each real shifted future token
@@ -938,10 +935,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         self.num_blocks = len(gpt2_blocks)
         self.max_recurrence = max_recurrence
         self.k_last_recurrence_gradient_backprop = k_last_recurrence_gradient_backprop
-        self.sample_iterations = sample_iterations
         self.current_recurrence = 0
-        if self.sample_iterations:
-            self.std = None
         self.use_recurrence_embedding = use_recurrence_embedding
         self.recurrence_embedding_base_freq = recurrence_embedding_base_freq
         if use_recurrence_embedding:
@@ -979,15 +973,6 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         self.future_masking_prob = future_masking_prob
 
         # self._check_max_recurrence()
-
-    def set_sampling_std(self, std: float):
-        """
-        Sets the standard deviation for sampling the number of recurrences.
-
-        Args:
-            std (float): The standard deviation to be set.
-        """
-        self.std = std * self.max_recurrence / 2
 
     def _recurrence_step(self, prev_iter_embd, input_embd, steps_done):
         """One recurrence step with or without gradient tracking."""
@@ -1089,14 +1074,6 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             self.k_last_recurrence_gradient_backprop == -1
             or self.k_last_recurrence_gradient_backprop > self.max_recurrence
         )
-
-        if self.sample_iterations and self.training:
-            # sample from a normal distribution
-            recurrences = self.max_recurrence + torch.normal(mean=0, std=self.std, size=(1,)).item()
-            recurrences = min(recurrences, self.max_recurrence*2)
-            recurrences = max(recurrences, 1)
-        else:
-            recurrences = self.max_recurrence
         
         if self.track_recurrence_embd_similarity:
             cosine_similarities = []
@@ -1105,7 +1082,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         if self.return_each_recurrence_output:
             all_recurrence_outputs = []
 
-        self.current_recurrence = round(recurrences)
+        self.current_recurrence = self.max_recurrence
         output = {}
         combined_output = None
         output['halt_signal'] = {r: 1 for r in range(self.current_recurrence)}
@@ -1386,7 +1363,6 @@ class GroupRecursiveGPT2Block(nn.Module):
         max_recurrence: int,
         n_embd: int,
         k_last_recurrence_gradient_backprop: int = -1,
-        sample_iterations: bool = False,
         use_recurrence_embedding: bool = False,
         recurrence_embedding_base_freq: float = 10000.0,
         track_recurrence_embd_similarity: bool = False,
@@ -1400,7 +1376,6 @@ class GroupRecursiveGPT2Block(nn.Module):
             max_recurrence (int): The maximum number of recurrences.
             k_last_recurrence_gradient_backprop (int): The number of last recurrences to backpropagate gradients through.
                 If set to -1, backpropagation is done through all recurrences. Default is -1.
-            sample_iterations (bool): Whether to sample the number of recurrences during training. Defaults to False.
 
         Note:
             When using GroupRecursiveGPT2Block, the input tensor is feeded to the block max_recurrence (i.e. L) times. In other words,
@@ -1412,10 +1387,7 @@ class GroupRecursiveGPT2Block(nn.Module):
         self.num_blocks = len(gpt2_blocks)
         self.max_recurrence = max_recurrence
         self.k_last_recurrence_gradient_backprop = k_last_recurrence_gradient_backprop
-        self.sample_iterations = sample_iterations
         self.current_recurrence = 0
-        if self.sample_iterations:
-            self.std = None
         self.use_recurrence_embedding = use_recurrence_embedding
         self.recurrence_embedding_base_freq = recurrence_embedding_base_freq
         if use_recurrence_embedding:
@@ -1429,15 +1401,6 @@ class GroupRecursiveGPT2Block(nn.Module):
         
 
         # self._check_max_recurrence()
-
-    def set_sampling_std(self, std: float):
-        """
-        Sets the standard deviation for sampling the number of recurrences.
-
-        Args:
-            std (float): The standard deviation to be set.
-        """
-        self.std = std * self.max_recurrence / 2
 
 
     def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
@@ -1493,14 +1456,6 @@ class GroupRecursiveGPT2Block(nn.Module):
             self.k_last_recurrence_gradient_backprop == -1
             or self.k_last_recurrence_gradient_backprop > self.max_recurrence
         )
-
-        if self.sample_iterations and self.training:
-            # sample from a normal distribution
-            recurrences = self.max_recurrence + torch.normal(mean=0, std=self.std, size=(1,)).item()
-            recurrences = min(recurrences, self.max_recurrence*2)
-            recurrences = max(recurrences, 1)
-        else:
-            recurrences = self.max_recurrence
         
         if self.track_recurrence_embd_similarity:
             cosine_similarities = []
@@ -1509,7 +1464,7 @@ class GroupRecursiveGPT2Block(nn.Module):
         if self.return_each_recurrence_output:
             all_recurrence_outputs = []
 
-        self.current_recurrence = round(recurrences)
+        self.current_recurrence = self.max_recurrence
         for r in range(self.current_recurrence):
             if not full_grad and r < (self.current_recurrence - self.k_last_recurrence_gradient_backprop):
                 x = x.detach()
@@ -1572,7 +1527,6 @@ class GPT2LLM(NNModel):
         recurrent_blocks_indices: Union[list[int], list[list[int]]],
         k_last_recurrence_gradient_backprops: Union[int, list[int]],
         recurrent_blocks_max_recurrences: Union[int, list[int]],
-        sample_iterations: bool = False,
         use_recurrence_embedding: bool = False,
         recurrence_embedding_base_freq: float = 10000.0,
         neft: bool = False,
@@ -1618,7 +1572,6 @@ class GPT2LLM(NNModel):
             k_last_recurrence_gradient_backprops (Union[int, list[int]]): Number of last recurrences to backpropagate gradients through
                 (only for recurrent blocks). If -1, backpropagation is done through all recurrences.
             recurrent_blocks_max_recurrences (Union[int, list[int]]): Maximum number of recurrences for each recurrent block.
-            sample_iterations (bool): Whether to sample the number of recurrences during training. Defaults to False.
             seed (int, optional): The random seed. Defaults to None.
             enforce_swiglu_hidden_dim_multiple_of (int): Enforces
                 the hidden dimension in the SwiGLU layer to be a multiple of this value.
@@ -1769,7 +1722,6 @@ class GPT2LLM(NNModel):
                     gpt2_blocks=gpt2_blocks,
                     max_recurrence=max_recurrence,
                     k_last_recurrence_gradient_backprop=k_last_gradient_backprop,
-                    sample_iterations=sample_iterations,
                     n_embd=n_embd,
                     use_recurrence_embedding=use_recurrence_embedding,
                     recurrence_embedding_base_freq=recurrence_embedding_base_freq,
@@ -2115,8 +2067,6 @@ class GPT2LLM(NNModel):
                 
             if block_type in [BlockTypes.GROUP_RECURSIVE, BlockTypes.GROUP_RECURSIVE_MTP]:
                 block: Union[GroupRecursiveGPT2Block, GroupRecursiveGPT2MTPBlock] = self.transformer.h[layer_idx]  # type: ignore
-                if self.training:# and sampling_std is not None:
-                    block.set_sampling_std(sampling_std)
 
                 output = {}
                 if block_type == BlockTypes.GROUP_RECURSIVE_MTP:

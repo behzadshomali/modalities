@@ -385,7 +385,7 @@ model_raw:
     recurrent_blocks_indices: [[0,1,2,3,4,5,6,7,8,9,10,11]]
     k_last_recurrence_gradient_backprops: -1 # -1 means the gradients for all steps will be propagated
     recurrent_blocks_max_recurrences: 3
-    sample_iterations: false
+    
     use_recurrence_embedding: true
     recurrence_embedding_base_freq: 100.0
     use_LNS: true

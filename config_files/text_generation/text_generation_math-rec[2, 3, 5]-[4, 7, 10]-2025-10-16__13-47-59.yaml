@@ -80,7 +80,7 @@ model_raw:
     - 2
     - 3
     - 5
-    sample_iterations: false
+    
 wrapped_model:
   component_key: model
   variant_key: fsdp1_wrapped

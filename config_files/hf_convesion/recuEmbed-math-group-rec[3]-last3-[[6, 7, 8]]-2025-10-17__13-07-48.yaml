@@ -286,7 +286,7 @@ model_raw:
     k_last_recurrence_gradient_backprops: 3 # -1 means the gradients for all steps will be propagated
     
     recurrent_blocks_max_recurrences: [3]
-    sample_iterations: false
+    
     use_recurrence_embedding: true
     
 

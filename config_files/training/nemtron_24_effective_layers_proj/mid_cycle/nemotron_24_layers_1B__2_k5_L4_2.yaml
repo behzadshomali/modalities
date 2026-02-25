@@ -546,7 +546,7 @@ model_raw:
     recurrent_blocks_indices: [[2,3,4,5,6]]
     k_last_recurrence_gradient_backprops: -1 # -1 means the gradients for all steps will be propagated
     recurrent_blocks_max_recurrences: [4]
-    sample_iterations: false
+    
     use_recurrence_embedding: false
 
 lr_scheduler:
