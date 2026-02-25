@@ -935,8 +935,6 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             self.recurrence_embd = SinusoidalRecurrenceEmbedding(n_embd, base_freq=recurrence_embedding_base_freq)
         
         self.track_recurrence_embd_similarity = track_recurrence_embd_similarity
-        if track_recurrence_embd_similarity:
-            self.cos = nn.CosineSimilarity(dim=-1)
 
         self.return_each_recurrence_output = return_each_recurrence_output # should be used only when iterating over the entire model
         self.embd_norm = nn.LayerNorm(n_embd)
@@ -959,8 +957,6 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             
         # we will have at most "max_recurrence" latent thoughts which we want to learn
         self.latent_thoughts = nn.Parameter(torch.randn(max_recurrence-1, n_embd))
-        self.latent_thoughts.data.normal_(mean=0.0, std=0.02) # initialize the latent thoughts similar to the rest of the model parameters
-
         self.do_shifted_input = do_shifted_input
         self.future_masking_prob = future_masking_prob
 
@@ -977,7 +973,6 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             )
             prev_iter_embd = torch.cat([steps_feature, prev_iter_embd], dim=-1).to(prev_iter_embd.dtype)
 
-        # if embd is not None:# and steps_done > 0: let's copy the input for the first iteration as well, so that the model can decide whether to use it or not
         prev_iter_embd = self.prev_iter_embd_norm(prev_iter_embd)
         
         if self.do_shifted_input:
@@ -987,7 +982,6 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             batch_size = embd.size(0)
             latent_thoughts = self.latent_thoughts[:steps_done].unsqueeze(0).repeat(batch_size, 1, 1)
 
-            # ── Scheduled future-token masking ──────────────────────────
             # During training, randomly replace real shifted future tokens with a
             # learnable latent thought (the same surrogates the model sees at inference
             # for positions without real future context).  This teaches the model to
@@ -1012,9 +1006,6 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         
         x = torch.cat([embd, prev_iter_embd], dim=-1).to(prev_iter_embd.dtype)
         x = self.proj(x)
-        # else: # iter 0 when no embd is provided
-        #     x = prev_iter_embd
-
         for block in self.gpt2_blocks:
             x = block(x)
         
@@ -1038,26 +1029,6 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         Returns:
             torch.Tensor: Output tensor.
         """
-
-        # If recurrence_step is provided, run only one step
-        # if recurrence_step is not None:
-        #      x_after = self._recurrence_step(
-        #         prev_iter_embd=x, 
-        #         embd=kwargs.get("tokens_repres"),
-        #         steps_done=torch.tensor(recurrence_step, device=x.device)
-        #     )
-             
-        #      output = {"output": x_after}
-        #      if self.return_each_recurrence_output:
-        #          if recurrence_outputs is not None:
-        #              recurrence_outputs.append(x_after)
-        #          else:
-        #              recurrence_outputs = [x_after]
-        #          output["recurrence_outputs"] = recurrence_outputs
-
-        #      return output
-        
-        
         # ensure output type is the same as input type
         type_ = x.dtype
         
@@ -1091,7 +1062,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
 
             if self.track_recurrence_embd_similarity:
                 # cosine similarity between x_before and x_after
-                cosine_similarity = (self.cos(x_before.view(x_before.size(0), -1), x_after.view(x_after.size(0), -1)) + 1.0 ) / 2.0 # shift to [0, 1]
+                cosine_similarity = (nn.CosineSimilarity(dim=-1)(x_before.view(x_before.size(0), -1), x_after.view(x_after.size(0), -1)) + 1.0 ) / 2.0 # shift to [0, 1]
                 cosine_similarities.append(cosine_similarity.mean())
 
                 # mse 
@@ -1106,7 +1077,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
                 )
                 
 
-                # Halting probab∂ility (lambda_n)
+                # Halting probability (lambda_n)
                 lambda_n = self.halt_block(combined_output)
 
                 # # Force halt at last step
@@ -1160,25 +1131,6 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             kl_loss = p_n_for_kl * (torch.log(p_n_for_kl + 1e-8) - torch.log(prior_dist + 1e-8))
             kl_loss = kl_loss.sum(dim=1).mean()  # sum over steps, mean over batch/seq
             ponder_regularization_losses.append(kl_loss)
-            
-
-        #     # assign the remaining probability to the last step
-        #     p_n_list[-1] = p_n_list[-1] + unhalted_prob
-
-        #     p_n_tensor = torch.stack(p_n_list, dim=1).squeeze(-1) # [batch, steps]
-            
-        #     # Prior dist: uniform distribution over the number of steps (1 to current_recurrence)
-        #     # and not the tokens (only the first two dimensions matter for the prior: batch x steps x seq)
-        #     b, s, l = p_n_tensor.size()
-        #     prior_dist = torch.ones(b, s, device=p_n_tensor.device) / self.max_recurrence
-        #     prior_dist = prior_dist.unsqueeze(-1).expand_as(p_n_tensor) # [batch, steps, seq]
-
-        #     # KL Calculation
-        #     # KL(P || Q) = sum(P * log(P / Q))
-        #     kl_loss = p_n_tensor * (torch.log(p_n_tensor + 1e-8) - torch.log(prior_dist + 1e-8))
-        #     kl_loss = kl_loss.sum(dim=1).mean() # Sum over steps, mean over batch
-            
-        #     ponder_regularization_losses.append(kl_loss)   
                    
         
         if self.return_each_recurrence_output:
@@ -1194,10 +1146,10 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             
 
         output["output"] = x.to(type_)
-
         missing_halt_signals_cnt = self.current_recurrence - len(p_n_list)
         for _ in range(missing_halt_signals_cnt):
             p_n_list.append(torch.ones(batch_size, seq_len, device=x.device))
+        
         return output, ponder_regularization_losses, p_n_list
 
 class CombinedRepresentationGPT2Block(nn.Module):
@@ -1220,7 +1172,6 @@ class CombinedRepresentationGPT2Block(nn.Module):
         self.current_gates_normalized = [torch.zeros(n_embd) for _ in self.gate_layers]
         if gates_bias is not None:
             assert len(gates_bias) == num_representations_max, "Length of gates_bias should be equal to num_representations_max"
-            # self.gate_bias = nn.Parameter(torch.tensor(gates_bias).unsqueeze(1).expand(-1, n_embd)) # bias for each gate
             self.gate_bias = nn.Parameter(
                 torch.tensor(gates_bias).unsqueeze(1).repeat(1, n_embd)
             )
@@ -1238,17 +1189,12 @@ class CombinedRepresentationGPT2Block(nn.Module):
     ) -> tuple[torch.Tensor, dict[int, torch.Tensor]]:
         
         if isinstance(x, dict):
-            if "recurrence_outputs" in x:
-                representations = x["recurrence_outputs"]
-            else:
-                 # Unexpected dict structure
-                 raise ValueError("Unexpected input dictionary structure in CombinedRepresentationGPT2Block")
+            representations = x["recurrence_outputs"]
         else:
             representations = [x]
 
 
         combined_h = torch.zeros_like(representations[0])
-        
         for i, h in enumerate(representations):
             if (
                 isinstance(pre_computed_combined_representation, (list, tuple))
@@ -1261,47 +1207,6 @@ class CombinedRepresentationGPT2Block(nn.Module):
             gate = torch.sigmoid(self.gate_layers[i](h)) * torch.nn.functional.softplus(self.gate_bias[i])
             self.current_gates[i] = gate
         
-        
-        # # normalize gates so that they sum to 1 using Softmax only to valid
-        # # representations --> len(representations)
-        # gates_normalized = []
-        # unhalted_gates = torch.ones_like(self.current_gates[0])
-        # for i in range(len(representations)):
-        #     gate = self.current_gates[i]
-        #     gates_normalized.append(gate * unhalted_gates)
-        #     unhalted_gates = unhalted_gates * (1 - gate)
-
-        # # normalize gates so that they sum to 1 across the representations dimension
-        # gates_normalized = torch.stack(gates_normalized, dim=0) # shape: num_representations, batch, seq_len, n_embd
-        # gates_normalized = gates_normalized / (gates_normalized.sum(dim=0, keepdim=True) + 1e-8) # shape: num_representations, batch, seq_len, n_embd
-
-        # # gates_stack = torch.stack([self.current_gates[i] for i in range(len(representations))], dim=0) # shape: num_representations, n_embd
-        # # gates_normalized = torch.nn.functional.softmax(gates_stack, dim=0) # shape: num_representations, n_embd
-        # self.current_gates_normalized = [gates_normalized[i] for i in range(len(representations))]
-        # for i, h in enumerate(representations):
-        #     combined_h = combined_h + gates_normalized[i] * h
-    
-        # return combined_h
-
-        ## Halting-style (ACT) normalization: stick-breaking with remainder on last step
-        ## p_i = g_i * prod(1 - g_j for j < i), and p_last = 1 - sum(p_0..p_{last-1})
-        # num_repr = len(representations)
-        # gates_normalized = []
-        # unhalted_gates = torch.ones_like(self.current_gates[0])
-        # for i in range(num_repr):
-        #     gate = self.current_gates[i]
-        #     if i < num_repr - 1:
-        #         gates_normalized.append(gate * unhalted_gates)
-        #         unhalted_gates = unhalted_gates * (1 - gate)
-        #     else:
-        #         # Last step gets the remainder to ensure sum = 1
-        #         gates_normalized.append(unhalted_gates)
-
-        # gates_normalized = torch.stack(gates_normalized, dim=0) # shape: num_representations, batch, seq_len, n_embd
-        # self.current_gates_normalized = [gates_normalized[i] for i in range(len(representations))]
-        # for i, h in enumerate(representations):
-        #     combined_h = combined_h + gates_normalized[i] * h
-
         gates_stack = torch.stack([self.current_gates[i] for i in range(len(representations))], dim=0) # shape: num_representations, batch, seq_len, n_embd
         gates_normalized = gates_stack / (gates_stack.sum(dim=0, keepdim=True) + 1e-8) # shape: num_representations, batch, seq_len, n_embd
         self.current_gates_normalized = [gates_normalized[i] for i in range(len(representations))]
@@ -1317,7 +1222,8 @@ class HaltGPT2Block(nn.Module):
     ):
         super().__init__()
         self.block_type = BlockTypes.HALT
-        # tis layer outputs a scalar between 0 and 1 indicating whether to halt or not
+        
+        # this layer outputs a scalar between 0 and 1 indicating whether to halt or not
         # for the given sequence
         self.halt_layer = nn.Linear(n_embd, 1)
 
@@ -1350,7 +1256,7 @@ class GroupRecursiveGPT2Block(nn.Module):
             max_recurrence (int): The maximum number of recurrences.
 
         Note:
-            When using GroupRecursiveGPT2Block, the input tensor is feeded to the block max_recurrence (i.e. L) times. In other words,
+            When using GroupRecursiveGPT2Block, the input tensor is fed to the block max_recurrence (i.e. L) times. In other words,
             when max_recurrence=1, the GroupRecursiveGPT2Block behaves like a standard GPT2Block.
         """
         super().__init__()
@@ -1365,13 +1271,7 @@ class GroupRecursiveGPT2Block(nn.Module):
             self.recurrence_embd = SinusoidalRecurrenceEmbedding(n_embd, base_freq=recurrence_embedding_base_freq)
         
         self.track_recurrence_embd_similarity = track_recurrence_embd_similarity
-        if track_recurrence_embd_similarity:
-            self.cos = nn.CosineSimilarity(dim=-1)
-
-        self.return_each_recurrence_output = return_each_recurrence_output # should be used only when iterating over the entire model
-        
-
-        # self._check_max_recurrence()
+        self.return_each_recurrence_output = return_each_recurrence_output
 
 
     def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
@@ -1396,29 +1296,6 @@ class GroupRecursiveGPT2Block(nn.Module):
             
             return x
         
-        ## add non-linearities using convolution :
-        ## x shape: batch size, seq len, dim
-        # x_t = x.transpose(1, 2)  # (batch, dim=768, seq_len=2048)
-
-        # weight = torch.ones(
-        #     1, x_t.size(1), 1,   # in_channels = 768
-        #     device=x.device,
-        #     dtype=x.dtype
-        # )
-        # bias = torch.zeros(
-        #     1,
-        #     device=x.device,
-        #     dtype=x.dtype
-        # )
-
-        # x = torch.nn.functional.conv1d(
-        #     x_t,
-        #     weight=weight,
-        #     bias=bias,
-        #     stride=1,
-        #     padding=0
-        # ).transpose(1, 2)
-        
         # ensure output type is the same as input type
         type_ = x.dtype
         
@@ -1441,7 +1318,7 @@ class GroupRecursiveGPT2Block(nn.Module):
 
             if self.track_recurrence_embd_similarity:
                 # cosine similarity between x_before and x_after
-                cosine_similarity = (self.cos(x_before.view(x_before.size(0), -1), x_after.view(x_after.size(0), -1)) + 1.0 ) / 2.0 # shift to [0, 1]
+                cosine_similarity = (nn.CosineSimilarity(dim=-1)(x_before.view(x_before.size(0), -1), x_after.view(x_after.size(0), -1)) + 1.0 ) / 2.0 # shift to [0, 1]
                 cosine_similarities.append(cosine_similarity.mean())
 
                 # mse 
@@ -1565,12 +1442,6 @@ class GPT2LLM(NNModel):
         self.future_masking_prob = future_masking_prob
         
         if return_each_recurrence_output:
-            # if (len(recurrent_blocks_indices) != 1 or len(recurrent_blocks_indices[0]) != n_layer):
-            #     raise ValueError(
-            #         "When using 'return_each_recurrence_output', "
-            #         "'recurrent_blocks_indices' must be a list of lists, "
-            #         "meaning that, in this case only iterating over the entire model is supported."
-            #     )
             self.recurrence_logits_entropy_stats = {}
 
         if track_recurrence_embd_similarity:
@@ -1591,8 +1462,6 @@ class GPT2LLM(NNModel):
         self._check_max_recurrences()
 
         if use_combined_representation:
-            # self.combined_representation_block = CombinedRepresentationGPT2Block(n_embd=n_embd, num_representations_max=max(self.max_recurrences))
-            # self.halt_block = HaltGPT2Block(n_embd=n_embd)
             self.halt_value_stats = {}
             self.gate_stats = {f"gate_{i}": {} for i in range(max(self.max_recurrences))}
             self.gate_normalized_stats = {f"normalized_gate_{i}": {} for i in range(max(self.max_recurrences))}
@@ -1703,7 +1572,7 @@ class GPT2LLM(NNModel):
         assert n == n_layer, f"Expected {n_layer} blocks, but got {n}!"
 
         if self.separate_lm_head_norm:
-            # for each iteration over the entire model, we want to have a separate norm layer for the lm head
+            # for each iteration, we want to have a separate norm layer for the lm head
             lm_head_norms = []
             for _ in range(self.max_recurrences[-1]):
                 lm_head_norms.append(
@@ -1917,11 +1786,6 @@ class GPT2LLM(NNModel):
             
             self.gate_normalized_stats[gate_key][int(layer_idx)][int(iter_idx)].append(gate_val)    
             
-            
-
-
-    def get_recurrence_similarity_penalty(self) -> torch.Tensor:
-        pass
     
     @overload
     def forward(self, inputs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -2010,14 +1874,9 @@ class GPT2LLM(NNModel):
 
                 output = {}
                 if block_type == BlockTypes.GROUP_RECURSIVE_MTP:
-                    # PonderNet setup
-                    batch_size = h.size(0)
                     seq_len = h.size(1)
-
-                    # for r in range(block.max_recurrence):
                     output, ponder_regularization_losses, p_n_list = block(
                         h,
-                        # recurrence_outputs=output.get("recurrence_outputs", None), 
                         tokens_repres=tokens_repres
                     )
 
@@ -2027,6 +1886,7 @@ class GPT2LLM(NNModel):
                         h = output["output"]
 
                     self.record_gate_stats(block.combined_representation_block.current_gates, layer_idx, block.max_recurrence)
+                    
                     # For logging, normalize scalar gate means across iterations so trends remain comparable.
                     normalized_gates_for_logging = self._normalize_gate_values_for_logging(
                         block.combined_representation_block.current_gates,
@@ -2037,8 +1897,6 @@ class GPT2LLM(NNModel):
                     self.record_halt_signal_stats(p_n_list)
                     current_gates = block.combined_representation_block.current_gates
                     current_gates_normalized = block.combined_representation_block.current_gates_normalized
-                    # block.combined_representation_block.reset_current_gates()
-
                 else:
                     output = block(h, tokens_repres=tokens_repres)
                     h = output["output"]
@@ -2087,7 +1945,6 @@ class GPT2LLM(NNModel):
         if self.return_each_recurrence_output:
             final_output["each_recurrence_entropy"] = []
             final_output["each_recurrence_logits"] = []
-            # for r in range(self.max_recurrences[-1]-1): # already calculated the last iteration outputs
             for r in range(len(each_recurrence_outputs)-1):
                 if self.separate_lm_head_norm:
                     o = self.transformer.lm_head_norm[r](each_recurrence_outputs[r])
