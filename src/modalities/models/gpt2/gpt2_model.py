@@ -992,7 +992,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         """
         self.std = std * self.max_recurrence / 2
 
-    def _recurrence_step(self, prev_iter_embd, embd, steps_done):
+    def _recurrence_step(self, prev_iter_embd, input_embd, steps_done):
         """One recurrence step with or without gradient tracking."""
         if self.use_recurrence_embedding:
             normalized_steps_done = steps_done / self.max_recurrence
@@ -1008,7 +1008,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         
         if self.do_shifted_input:
             # embd length: seq_len - step_done
-            embd = embd[:, steps_done: , :] # batch, seq_len - steps_done, embd_dim
+            embd = input_embd[:, steps_done: , :] # batch, seq_len - steps_done, embd_dim
             # latent thought shape: steps_done, embd_dim --> batch, steps_done, embd_dim
             batch_size = embd.size(0)
             latent_thoughts = self.latent_thoughts[:steps_done].unsqueeze(0).repeat(batch_size, 1, 1)
@@ -1124,7 +1124,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             x_before = x
             x_after = self._recurrence_step(
                 prev_iter_embd=x, 
-                embd=kwargs.get("tokens_repres"),
+                input_embd=kwargs.get("tokens_repres"),
                 steps_done=torch.tensor(r, device=x.device)
             )
             x = x_after
