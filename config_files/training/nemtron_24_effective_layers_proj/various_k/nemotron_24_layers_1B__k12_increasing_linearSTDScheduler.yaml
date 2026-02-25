@@ -222,9 +222,7 @@ app_state:
     lr_scheduler:
       instance_key: lr_scheduler
       pass_type: BY_REFERENCE
-    std_scheduler:
-      instance_key: std_scheduler
-      pass_type: BY_REFERENCE
+    
 
 initialized_model:
   component_key: model
@@ -405,7 +403,7 @@ evaluation_subscriber:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_24_effective_layers_1B_std_scheduler
     mode: ${settings.wandb_mode}
-    experiment_id: k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_sample=${model_raw.config.sample_iterations}_recurEmbed=${model_raw.config.use_recurrence_embedding}_lastBackProp=${model_raw.config.k_last_recurrence_gradient_backprops}_${settings.experiment_id}
+    experiment_id: k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_recurEmbed=${model_raw.config.use_recurrence_embedding}_lastBackProp=${model_raw.config.k_last_recurrence_gradient_backprops}_${settings.experiment_id}
     directory: ${settings.wandb_path}
     config_file_path: ${settings.config_file_path}
 

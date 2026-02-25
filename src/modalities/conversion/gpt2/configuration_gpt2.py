@@ -137,7 +137,6 @@ class GPT2Config(PretrainedConfig):
     ):
         # recurrent related variables
         self.recurrent_blocks_indices = recurrent_blocks_indices
-        self.sample_iterations = sample_iterations
         self.k_last_recurrence_gradient_backprops = k_last_recurrence_gradient_backprops
         self.recurrent_blocks_max_recurrences = recurrent_blocks_max_recurrences
         self.use_recurrence_embedding = use_recurrence_embedding

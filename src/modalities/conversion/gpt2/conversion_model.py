@@ -71,7 +71,6 @@ def convert_model_config(modalities_config: ConfigDictType) -> GPT2Config:
         _attn_implementation=_map_attention_type(config),
         output_attentions=False,
         recurrent_blocks_indices=config.get("recurrent_blocks_indices", []),
-        sample_iterations=config.get("sample_iterations", None),
         k_last_recurrence_gradient_backprops=config.get("k_last_recurrence_gradient_backprops", None),
         recurrent_blocks_max_recurrences=config.get("recurrent_blocks_max_recurrences", None),
         use_recurrence_embedding=config.get("use_recurrence_embedding", False),

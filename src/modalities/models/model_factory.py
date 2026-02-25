@@ -621,7 +621,6 @@ class GPT2ModelFactory:
             recurrent_blocks_indices=recurrent_blocks_indices,
             k_last_recurrence_gradient_backprops=k_last_recurrence_gradient_backprops,
             recurrent_blocks_max_recurrences=recurrent_blocks_max_recurrences,
-            sample_iterations=sample_iterations,
             use_recurrence_embedding=use_recurrence_embedding,
             recurrence_embedding_base_freq=recurrence_embedding_base_freq,
             enforce_swiglu_hidden_dim_multiple_of=enforce_swiglu_hidden_dim_multiple_of,

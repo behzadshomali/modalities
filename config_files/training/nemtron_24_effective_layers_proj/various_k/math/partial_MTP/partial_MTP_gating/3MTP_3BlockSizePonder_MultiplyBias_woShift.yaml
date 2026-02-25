@@ -296,9 +296,7 @@ app_state:
     lr_scheduler:
       instance_key: lr_scheduler
       pass_type: BY_REFERENCE
-    std_scheduler:
-      instance_key: std_scheduler
-      pass_type: BY_REFERENCE
+    
 
 initialized_model:
   component_key: model
@@ -424,13 +422,7 @@ lr_scheduler:
     anneal_strategy: cos
     last_epoch: ${settings.training_progress.last_step}
 
-std_scheduler:
-  component_key: scheduler
-  variant_key: cosine_std
-  config: 
-    start_factor: 1
-    end_factor: 0
-    total_steps: ${settings.training_target.num_target_steps}
+
 
 optimizer:
   component_key: optimizer

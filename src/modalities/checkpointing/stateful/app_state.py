@@ -46,7 +46,6 @@ class AppState(Stateful):
         self._optimizer = optimizer
         self._lr_scheduler = lr_scheduler
         self._is_loaded = False
-        self.std_scheduler = std_scheduler
 
     @property
     def is_loaded(self) -> bool:
