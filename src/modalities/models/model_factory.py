@@ -631,7 +631,6 @@ class GPT2ModelFactory:
             use_last_iteration_output_as_final=use_last_iteration_output_as_final,
             use_combined_representation=use_combined_representation,
             halt_threshold=halt_threshold,
-            lambda_ponder=lambda_ponder,
             gates_bias=gates_bias,
             multiply_bias=multiply_bias,
             do_shifted_input=do_shifted_input,
