@@ -591,7 +591,7 @@ class GPT2ModelFactory:
         use_last_iteration_output_as_final: bool = True,
         use_combined_representation: bool = False,
         halt_threshold: Optional[float] = None,
-        lambda_ponder: Optional[float] = None,
+        
         gates_bias: Optional[List[float]] = None,
         multiply_bias: Optional[bool] = False,
         do_shifted_input: Optional[bool] = True,

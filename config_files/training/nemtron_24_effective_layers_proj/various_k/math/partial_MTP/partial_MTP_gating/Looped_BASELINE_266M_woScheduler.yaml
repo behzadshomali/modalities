@@ -400,7 +400,7 @@ model_raw:
     use_last_iteration_output_as_final: true
     use_combined_representation: false
     # halt_threshold: 0.5
-    # lambda_ponder: 0.66 # 2/3
+    # 
     # gates_bias: [3, -3]
 
 lr_scheduler:

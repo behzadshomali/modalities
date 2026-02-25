@@ -404,7 +404,7 @@ model_raw:
     use_last_iteration_output_as_final: false
     use_combined_representation: true
     halt_threshold: 0.5
-    lambda_ponder: 0.66 # 1/2
+    
     gates_bias: [3, -3, -3] # Set the biases for the gates (one for each gate).
 
 lr_scheduler:

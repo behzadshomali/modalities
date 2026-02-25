@@ -399,7 +399,6 @@ class GPT2LLMConfig(BaseModel):
     use_last_iteration_output_as_final: bool = True
     use_combined_representation: bool = False
     halt_threshold: Optional[float] = None
-    lambda_ponder: float = 0.2
     gates_bias: Optional[List[float]] = None
     multiply_bias: bool = False
     do_shifted_input: bool = True
@@ -908,7 +907,6 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         return_each_recurrence_output: bool = False,
         use_combined_representation: bool = False,
         halt_threshold: Optional[float] = None,
-        lambda_ponder: float = 0.2,
         gates_bias: Optional[List[float]] = None,
         multiply_bias: bool = False,
         do_shifted_input: bool = True,
@@ -977,7 +975,6 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         self.latent_thoughts = nn.Parameter(torch.randn(max_recurrence-1, n_embd))
         self.latent_thoughts.data.normal_(mean=0.0, std=0.02) # initialize the latent thoughts similar to the rest of the model parameters
 
-        self.lambda_ponder = lambda_ponder
         self.do_shifted_input = do_shifted_input
         self.future_masking_prob = future_masking_prob
 
@@ -1589,7 +1586,6 @@ class GPT2LLM(NNModel):
         use_last_iteration_output_as_final: bool = True,
         use_combined_representation: bool = False,
         halt_threshold: Optional[float] = 1.0,
-        lambda_ponder: float = 0.2,
         gates_bias: Optional[List[float]] = None,
         multiply_bias: bool = False,
         do_shifted_input: bool = True,
@@ -1656,7 +1652,6 @@ class GPT2LLM(NNModel):
         self.use_last_iteration_output_as_final = use_last_iteration_output_as_final
         self.use_combined_representation = use_combined_representation
         self.halt_threshold = halt_threshold
-        self.lambda_ponder = lambda_ponder
         self.gates_bias = gates_bias
         self.multiply_bias = multiply_bias
         self.do_shifted_input = do_shifted_input
@@ -1788,7 +1783,6 @@ class GPT2LLM(NNModel):
                     block = GroupRecursiveGPT2MTPBlock(
                         use_combined_representation=use_combined_representation,
                         halt_threshold=halt_threshold,
-                        lambda_ponder=lambda_ponder,
                         gates_bias=gates_bias,
                         multiply_bias=multiply_bias,
                         do_shifted_input=do_shifted_input,
