@@ -74,15 +74,13 @@ class CustomDynamicLayer(DynamicLayer):
 
 
 class BlockRecursiveModule(nn.Module):
-    def __init__(self, config, layer_block, num_recursions, sample_random_recursion, track_diagnostics, neft=False, neft_alpha=None):
+    def __init__(self, config, layer_block, num_recursions, sample_random_recursion, track_diagnostics):
         super().__init__()
         self.config = config # to store the modified num_recursions later
         self.layer_block = layer_block
         self.num_recursions = num_recursions
         self.sample_random_recursion = sample_random_recursion
         self.track_diagnostics = track_diagnostics
-        self.neft = neft
-        self.neft_alpha = neft_alpha
         self.is_cache_class_overwritten = [False] * len(layer_block)
         self.concatenate_iteration_outputs = config.concatenate_iteration_outputs
         if config.concatenate_iteration_outputs:
@@ -177,14 +175,6 @@ class BlockRecursiveModule(nn.Module):
                     **kwargs
                 )
 
-                if self.neft and self.training:
-                    alpha = self.neft_alpha
-                    L = hidden_states.shape[-2]
-                    d = hidden_states.shape[-1]
-                    noise = torch.rand_like(hidden_states) * 2 -1 # range: [-1,1]
-                    scaled_noise = noise * alpha / ((L*d)**0.5)
-                    hidden_states = hidden_states + scaled_noise
-
                 if self.track_diagnostics and self.training:
                     layer_name = f"recursive_block_layer_{i}"
                     grad_hook = self._make_grad_hook(layer_name, iteration, is_recurrent=True)
@@ -242,8 +232,6 @@ class RecursiveLlamaConfig(LlamaConfig):
         original_num_hidden_layers=None, # Default to None
         sample_random_recursion=False,
         track_diagnostics=False,
-        neft=False,
-        neft_alpha=None,
         gradually_increase_recursions=False,
         reset_optimizer=False,
         increase_steps=None,
@@ -290,8 +278,6 @@ class RecursiveLlamaConfig(LlamaConfig):
             self.num_recursions = num_recursions
         self.sample_random_recursion = sample_random_recursion
         self.track_diagnostics = track_diagnostics
-        self.neft = neft
-        self.neft_alpha = neft_alpha
         self.recurrent_blocks_have_residual = recurrent_blocks_have_residual
         self.gradually_increase_recursions = gradually_increase_recursions
         self.reset_optimizer = reset_optimizer
@@ -338,8 +324,6 @@ class RecursiveLlamaModel(LlamaModel):
                 num_recursions=num_recursions,
                 sample_random_recursion=config.sample_random_recursion,
                 track_diagnostics=config.track_diagnostics,
-                neft=config.neft,
-                neft_alpha=config.neft_alpha
             ))
 
             # Update index to continue after the block

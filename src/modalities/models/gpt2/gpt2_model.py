@@ -1502,8 +1502,6 @@ class GPT2LLM(NNModel):
         recurrent_blocks_max_recurrences: Union[int, list[int]],
         use_recurrence_embedding: bool = False,
         recurrence_embedding_base_freq: float = 10000.0,
-        neft: bool = False,
-        neft_alpha: float = 5.0,
         seed: Optional[int] = None,
         enforce_swiglu_hidden_dim_multiple_of: int = 256,
         use_LNS: bool = False,
@@ -1565,8 +1563,6 @@ class GPT2LLM(NNModel):
         self.blocks_types = []
         self.use_recurrence_embedding = use_recurrence_embedding
         self.recurrence_embedding_base_freq = recurrence_embedding_base_freq
-        self.neft = neft
-        self.neft_alpha = neft_alpha
         self.recurrence_usage_stats = {}
         self.processed_layers_in_this_run = 0
         self.use_LNS = use_LNS

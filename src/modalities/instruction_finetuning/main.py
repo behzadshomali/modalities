@@ -188,8 +188,6 @@ if "llama" in model_name and "recursion_settings" in config:
         recursion_indices=recursion_config["recursion_indices"],
         num_recursions=recursion_config["num_recursions"],
         track_diagnostics=recursion_config["track_diagnostics"],
-        neft=recursion_config.get("neft", False),
-        neft_alpha=recursion_config.get("neft_alpha", None),
         recurrent_blocks_have_residual=recursion_config.get("recurrent_blocks_have_residual", True),
         increase_steps=recursion_config.get("increase_steps", None),
         gradually_increase_recursions=recursion_config.get("gradually_increase_recursions", False),

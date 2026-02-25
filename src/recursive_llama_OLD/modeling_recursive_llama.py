@@ -27,14 +27,12 @@ class RecursiveLlamaForCausalLM(LlamaForCausalLM):
                     cfg.recursive_end_layer,
                     cfg.num_recursions,
                     cfg.sample_random_recursion,
-                    cfg.neft,
-                    cfg.neft_alpha
                 )
                 model._recursion_applied = True
 
         return model
     
-    def _apply_block_recursion(self, start_layer, end_layer, num_recursions, sample_random_recursion, neft=False, neft_alpha=None):
+    def _apply_block_recursion(self, start_layer, end_layer, num_recursions, sample_random_recursion):
         """Apply your recursion logic here"""
         n_layers = len(self.model.layers)
         
@@ -49,8 +47,6 @@ class RecursiveLlamaForCausalLM(LlamaForCausalLM):
                 self.sample_random_recursion = sample_random_recursion
                 self.track_diagnostics = track_diagnostics
                 self.output_dir = './'
-                self.neft = neft
-                self.neft_alpha = neft_alpha
 
                 if track_diagnostics:
                     self.gradient_history = []    # Store gradients
@@ -95,15 +91,6 @@ class RecursiveLlamaForCausalLM(LlamaForCausalLM):
                             position_embeddings=position_embeddings,
                         )
                         hidden_states = outputs[0].unsqueeze(0)
-
-                        if self.neft and self.training:
-                            alpha = self.neft_alpha
-                            L = hidden_states.shape[-2]
-                            d = hidden_states.shape[-1]
-                            noise = torch.rand_like(hidden_states) * 2 -1 # range: [-1,1]
-                            scaled_noise = noise * alpha / ((L*d)**0.5)
-                            hidden_states = hidden_states + scaled_noise
-
 
                         if self.track_diagnostics and hidden_states.requires_grad and self.training:
                             def make_grad_hook(layer_idx, iteration_idx):

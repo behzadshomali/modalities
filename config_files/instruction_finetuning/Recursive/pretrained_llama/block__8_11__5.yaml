@@ -70,7 +70,7 @@ recursion_settings:
   num_recursions: 5
   sample_random_recursion: true
   track_diagnostics: true
-  neft: false
+  
   gradually_increase_recursions: true
   reset_optimizer: false
   increase_steps: [2000, 4000, 6000, 8000]

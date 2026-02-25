@@ -141,8 +141,6 @@ def load_config(config_path, overwrite_config=True):
                 k = "RAND"
             elif k == "track_diagnostics":
                 k = "track"
-            elif k == "neft_alpha":
-                k = ""
             elif k == "gradually_increase_recursions":
                 k = "gradual"
             elif k == "increase_steps":
@@ -155,7 +153,7 @@ def load_config(config_path, overwrite_config=True):
                 k = "indices"
             elif k == "concatenate_iteration_outputs":
                 k = "concat"
-            elif k not in ["neft"]:
+            else:
                 raise ValueError(f"{k} is not valid!")
 
             recursion_str += f"{k}{v}-"

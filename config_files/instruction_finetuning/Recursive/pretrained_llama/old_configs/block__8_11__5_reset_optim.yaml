@@ -71,8 +71,8 @@ recursion_settings:
   num_recursions: 5
   sample_random_recursion: false
   track_diagnostics: true
-  neft: true
-  neft_alpha: 5
+  
+  
   gradually_increase_recursions: true
   reset_optimizer: true
   increase_steps: [4000, 6000, 8000, 9000, 10000]
