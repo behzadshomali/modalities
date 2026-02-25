@@ -398,7 +398,6 @@ class GPT2LLMConfig(BaseModel):
     use_combined_representation: bool = False
     halt_threshold: Optional[float] = None
     gates_bias: Optional[List[float]] = None
-    multiply_bias: bool = False
     do_shifted_input: bool = True
     future_masking_prob: float = 0.0
 
@@ -904,7 +903,6 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         use_combined_representation: bool = False,
         halt_threshold: Optional[float] = None,
         gates_bias: Optional[List[float]] = None,
-        multiply_bias: bool = False,
         do_shifted_input: bool = True,
         future_masking_prob: float = 0.0,
     ):
@@ -955,8 +953,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             self.combined_representation_block = CombinedRepresentationGPT2Block(
                 n_embd=n_embd, 
                 num_representations_max=self.max_recurrence,
-                gates_bias=gates_bias,
-                multiply_bias=multiply_bias
+                gates_bias=gates_bias
             )
             self.halt_block = HaltGPT2Block(n_embd=n_embd)
             
@@ -1209,7 +1206,6 @@ class CombinedRepresentationGPT2Block(nn.Module):
         n_embd: int,
         num_representations_max: int,
         gates_bias: Optional[List[float]] = None,
-        multiply_bias: bool = False,
     ):
         super().__init__()
         self.n_embd = n_embd
@@ -1230,8 +1226,6 @@ class CombinedRepresentationGPT2Block(nn.Module):
             )
         else:
             self.gate_bias = nn.Parameter(torch.zeros(num_representations_max, n_embd)) # bias for each gate
-        
-        self.multiply_bias = multiply_bias
 
     def reset_current_gates(self):
         self.current_gates = [torch.zeros(self.n_embd) for _ in self.gate_layers]
@@ -1264,12 +1258,7 @@ class CombinedRepresentationGPT2Block(nn.Module):
                 # to do that we should first reconstruct the combined representation up to this step
                 continue
             
-            # g = σ(Wh)
-            if self.multiply_bias:
-                gate = torch.sigmoid(self.gate_layers[i](h)) * torch.nn.functional.softplus(self.gate_bias[i])
-            else:
-                gate = torch.sigmoid(self.gate_layers[i](h) + self.gate_bias[i])
-            
+            gate = torch.sigmoid(self.gate_layers[i](h)) * torch.nn.functional.softplus(self.gate_bias[i])
             self.current_gates[i] = gate
         
         
@@ -1512,7 +1501,6 @@ class GPT2LLM(NNModel):
         use_combined_representation: bool = False,
         halt_threshold: Optional[float] = 1.0,
         gates_bias: Optional[List[float]] = None,
-        multiply_bias: bool = False,
         do_shifted_input: bool = True,
         future_masking_prob: float = 0.0,
     ):
@@ -1573,7 +1561,6 @@ class GPT2LLM(NNModel):
         self.use_combined_representation = use_combined_representation
         self.halt_threshold = halt_threshold
         self.gates_bias = gates_bias
-        self.multiply_bias = multiply_bias
         self.do_shifted_input = do_shifted_input
         self.future_masking_prob = future_masking_prob
         
@@ -1695,7 +1682,6 @@ class GPT2LLM(NNModel):
                         use_combined_representation=use_combined_representation,
                         halt_threshold=halt_threshold,
                         gates_bias=gates_bias,
-                        multiply_bias=multiply_bias,
                         do_shifted_input=do_shifted_input,
                         future_masking_prob=future_masking_prob,
                         **block_arguments

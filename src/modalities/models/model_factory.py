@@ -592,7 +592,6 @@ class GPT2ModelFactory:
         halt_threshold: Optional[float] = None,
         
         gates_bias: Optional[List[float]] = None,
-        multiply_bias: Optional[bool] = False,
         do_shifted_input: Optional[bool] = True,
         future_masking_prob: Optional[float] = 0.0,
     ) -> GPT2LLM:
@@ -630,7 +629,6 @@ class GPT2ModelFactory:
             use_combined_representation=use_combined_representation,
             halt_threshold=halt_threshold,
             gates_bias=gates_bias,
-            multiply_bias=multiply_bias,
             do_shifted_input=do_shifted_input,
             future_masking_prob=future_masking_prob,
         )
