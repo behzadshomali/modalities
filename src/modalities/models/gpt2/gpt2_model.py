@@ -7,6 +7,7 @@ from typing import Annotated, Callable, List, Mapping, Optional, Any, overload, 
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+import torch.utils.checkpoint as torch_checkpoint
 from pydantic import BaseModel, Field, model_validator, validator
 
 from modalities.config.lookup_enum import LookupEnum
@@ -401,6 +402,7 @@ class GPT2LLMConfig(BaseModel):
     gates_bias: Optional[List[float]] = None
     do_shifted_input: bool = True
     future_masking_prob: float = 0.0
+    use_activation_checkpointing: bool = False
 
     @model_validator(mode="after")
     def check_divisibility(self) -> "GPT2LLMConfig":
@@ -906,6 +908,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         gates_bias: Optional[List[float]] = None,
         do_shifted_input: bool = True,
         future_masking_prob: float = 0.0,
+        use_activation_checkpointing: bool = False,
     ):
         """
         Initializes the GroupRecursiveGPT2MTPBlock.
@@ -920,6 +923,8 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
                 gap by teaching the model to work with latent surrogates. 0.0 = no masking (default),
                 1.0 = always use latent thoughts (equivalent to inference behavior). Recommended:
                 start at 0.0 and anneal up to ~0.5 during training.
+            use_activation_checkpointing (bool): Whether to use gradient/activation checkpointing
+                for each GPT2Block inside the recurrence loop, trading compute for memory. Defaults to False.
         Note:
             When using GroupRecursiveGPT2MTPBlock, the input tensor is feeded to the block max_recurrence (i.e. L) times. In other words,
             when max_recurrence=1, the GroupRecursiveGPT2MTPBlock behaves like a standard GPT2Block.
@@ -960,6 +965,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         self.latent_thoughts = nn.Parameter(torch.randn(max_recurrence-1, n_embd))
         self.do_shifted_input = do_shifted_input
         self.future_masking_prob = future_masking_prob
+        self.use_activation_checkpointing = use_activation_checkpointing
 
         # self._check_max_recurrence()
 
@@ -977,11 +983,13 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         prev_iter_embd = self.prev_iter_embd_norm(prev_iter_embd)
         
         if self.do_shifted_input:
+            effective_steps = min(int(steps_done), input_embd.size(1))
+
             # embd length: seq_len - step_done
-            embd = input_embd[:, steps_done: , :] # batch, seq_len - steps_done, embd_dim
+            embd = input_embd[:, effective_steps: , :] # batch, seq_len - steps_done, embd_dim
             # latent thought shape: steps_done, embd_dim --> batch, steps_done, embd_dim
             batch_size = embd.size(0)
-            latent_thoughts = self.latent_thoughts[:steps_done].unsqueeze(0).repeat(batch_size, 1, 1)
+            latent_thoughts = self.latent_thoughts[:effective_steps].unsqueeze(0).repeat(batch_size, 1, 1)
 
             # During training, randomly replace real shifted future tokens with a
             # learnable latent thought (the same surrogates the model sees at inference
@@ -1008,7 +1016,10 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         x = torch.cat([embd, prev_iter_embd], dim=-1).to(prev_iter_embd.dtype)
         x = self.proj(x)
         for block in self.gpt2_blocks:
-            x = block(x)
+            if self.use_activation_checkpointing and self.training:
+                x = torch_checkpoint.checkpoint(block, x, use_reentrant=False)
+            else:
+                x = block(x)
         
         return x
 
@@ -1382,6 +1393,7 @@ class GPT2LLM(NNModel):
         gates_bias: Optional[List[float]] = None,
         do_shifted_input: bool = True,
         future_masking_prob: float = 0.0,
+        use_activation_checkpointing: bool = False,
     ):
         """
         Initializes the GPT2LLM object.
@@ -1443,6 +1455,7 @@ class GPT2LLM(NNModel):
         self.gates_bias = gates_bias
         self.do_shifted_input = do_shifted_input
         self.future_masking_prob = future_masking_prob
+        self.use_activation_checkpointing = use_activation_checkpointing
         
         if return_each_recurrence_logits_entropy:
             self.recurrence_logits_entropy_stats = {}
@@ -1556,6 +1569,7 @@ class GPT2LLM(NNModel):
                         gates_bias=gates_bias,
                         do_shifted_input=do_shifted_input,
                         future_masking_prob=future_masking_prob,
+                        use_activation_checkpointing=use_activation_checkpointing,
                         **block_arguments
                     )
             elif block_type in [BlockTypes.COMBINED_REPRESENTATION, BlockTypes.HALT]:
@@ -1708,6 +1722,9 @@ class GPT2LLM(NNModel):
             if int(iter_idx) not in self.halt_value_stats:
                 self.halt_value_stats[int(iter_idx)] = []
             
+            # Detach to prevent pinning the entire autograd graph in memory
+            if isinstance(halt_signal, torch.Tensor):
+                halt_signal = halt_signal.detach()
             self.halt_value_stats[int(iter_idx)].append(halt_signal)
 
     @staticmethod
@@ -1898,8 +1915,9 @@ class GPT2LLM(NNModel):
                     self.record_gate_normalized_stats(normalized_gates_for_logging, layer_idx, block.max_recurrence)
 
                     self.record_halt_signal_stats(p_n_list)
-                    current_gates = block.combined_representation_block.current_gates
-                    current_gates_normalized = block.combined_representation_block.current_gates_normalized
+                    # Detach gate references to avoid pinning autograd graph in memory
+                    current_gates = [g.detach() if isinstance(g, torch.Tensor) else g for g in block.combined_representation_block.current_gates]
+                    current_gates_normalized = [g.detach() if isinstance(g, torch.Tensor) else g for g in block.combined_representation_block.current_gates_normalized]
                 else:
                     output = block(h, tokens_repres=tokens_repres)
                     h = output["output"]

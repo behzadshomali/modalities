@@ -595,6 +595,7 @@ class GPT2ModelFactory:
         gates_bias: Optional[List[float]] = None,
         do_shifted_input: Optional[bool] = True,
         future_masking_prob: Optional[float] = 0.0,
+        use_activation_checkpointing: Optional[bool] = False,
     ) -> GPT2LLM:
         config = dict(
             sample_key=sample_key,
@@ -633,6 +634,7 @@ class GPT2ModelFactory:
             gates_bias=gates_bias,
             do_shifted_input=do_shifted_input,
             future_masking_prob=future_masking_prob,
+            use_activation_checkpointing=use_activation_checkpointing
         )
         if use_meta_device and use_weight_tying:
             raise ValueError(
