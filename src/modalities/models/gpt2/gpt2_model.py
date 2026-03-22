@@ -1415,9 +1415,9 @@ class GPT2LLM(NNModel):
             do_shifted_input (bool): Whether to apply shifted input. Defaults to True.
         """
         weight_decay_groups = {
-            "linear": [".attn", ".mlp", ".lm_head.weight"],
-            "embedding": [".wte", ".wpe", ".recurrence_embd"],
-            "layernorm": [".attention_norm", ".ffn_norm", ".lm_head_norm"],
+            "linear": [".attn", ".mlp", ".lm_head.weight", ".proj", ".gate_layers", ".halt_layer",],
+            "embedding": [".wte", ".wpe", ".recurrence_embd", ".latent_thoughts", ".gate_bias",],
+            "layernorm": [".attention_norm", ".ffn_norm", ".lm_head_norm", ".prev_iter_embd_norm", ".embd_norm"],
         }
         super().__init__(weight_decay_groups=weight_decay_groups, seed=seed)
         self.sample_key = sample_key

@@ -58,7 +58,7 @@ def get_default_muon_param_groups(model, weight_decay, weight_decay_groups_exclu
     # Build parameter groups based on whether we have weight decay groups
     if not has_weight_decay_groups:
         # Simple case: 2 groups (muon/non-muon with same weight decay)
-        return [
+        param_groups = [
             {
                 "params": muon_params_wd + muon_params_no_wd,
                 "names": muon_names_wd + muon_names_no_wd,
@@ -74,7 +74,7 @@ def get_default_muon_param_groups(model, weight_decay, weight_decay_groups_exclu
         ]
     else:
         # Complex case: 4 groups (muon/non-muon × with/without weight decay)
-        return [
+        param_groups = [
             {
                 "params": muon_params_wd,
                 "names": muon_names_wd,
@@ -100,6 +100,25 @@ def get_default_muon_param_groups(model, weight_decay, weight_decay_groups_exclu
                 "weight_decay": 0.0,
             },
         ]
+
+    _assert_completeness_of_muon_param_groups(model, param_groups)
+    return param_groups
+
+
+def _assert_completeness_of_muon_param_groups(model: nn.Module, param_groups: list[dict]) -> None:
+    """
+    Checks that the number of trainable parameters in the muon param groups
+    sums up to the total number of trainable model parameters as expected.
+    """
+    num_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    num_in_groups = sum(p.numel() for group in param_groups for p in group["params"])
+    print(f"Number of trainable parameters in model: {num_trainable:,}")
+    print(f"Number of parameters in Muon param groups: {num_in_groups:,}")
+    if num_in_groups != num_trainable:
+        raise OptimizerError(
+            f"Inconsistent number of parameters in Muon param groups: found {num_in_groups}, "
+            f"but model has {num_trainable} trainable parameters."
+        )
 
 
 class OptimizerFactory:
