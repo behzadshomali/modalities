@@ -678,8 +678,11 @@ class Trainer:
                         evaluation_result_publisher=evaluation_result_publisher,
                         evaluation_result=metrics,
                     )
+        # Clear stats on ALL ranks to prevent memory leaks on non-zero ranks
+        if hasattr(model, "recurrence_usage_stats"):
             model.recurrence_usage_stats = {}
 
+        if self.global_rank == 0:
             if hasattr(model, "recurrence_embedding_cosine_similarity_stats"):
                 recurrence_embedding_cosine_similarity_stats = model.recurrence_embedding_cosine_similarity_stats
                 for layer_idx, similarities in recurrence_embedding_cosine_similarity_stats.items():
@@ -699,8 +702,11 @@ class Trainer:
                         evaluation_result_publisher=evaluation_result_publisher,
                         evaluation_result=metrics,
                     )
-                model.recurrence_embedding_cosine_similarity_stats = {}
+        # Clear cosine similarity stats on ALL ranks
+        if hasattr(model, "recurrence_embedding_cosine_similarity_stats"):
+            model.recurrence_embedding_cosine_similarity_stats = {}
 
+        if self.global_rank == 0:
             if hasattr(model, "recurrence_embedding_mse_similarity_stats"):
                 recurrence_embedding_mse_similarity_stats = model.recurrence_embedding_mse_similarity_stats
                 for layer_idx, similarities in recurrence_embedding_mse_similarity_stats.items():
@@ -720,8 +726,11 @@ class Trainer:
                         evaluation_result_publisher=evaluation_result_publisher,
                         evaluation_result=metrics,
                     )
-                model.recurrence_embedding_mse_similarity_stats = {}
+        # Clear mse similarity stats on ALL ranks
+        if hasattr(model, "recurrence_embedding_mse_similarity_stats"):
+            model.recurrence_embedding_mse_similarity_stats = {}
 
+        if self.global_rank == 0:
             if hasattr(model, "recurrence_logits_entropy_stats"):
                 recurrence_logits_entropy_stats = model.recurrence_logits_entropy_stats
                 for iter_idx, entropies in recurrence_logits_entropy_stats.items():
@@ -741,8 +750,11 @@ class Trainer:
                         evaluation_result_publisher=evaluation_result_publisher,
                         evaluation_result=metrics,
                     )
-                model.recurrence_logits_entropy_stats = {}
+        # Clear entropy stats on ALL ranks
+        if hasattr(model, "recurrence_logits_entropy_stats"):
+            model.recurrence_logits_entropy_stats = {}
 
+        if self.global_rank == 0:
             if hasattr(model, "halt_value_stats"):
                 halt_value_stats = model.halt_value_stats
                 for iter_idx, halt_vals in halt_value_stats.items():
@@ -763,8 +775,11 @@ class Trainer:
                         evaluation_result_publisher=evaluation_result_publisher,
                         evaluation_result=metrics,
                     )
-                model.halt_value_stats = {}
+        # Clear halt stats on ALL ranks to prevent memory leaks
+        if hasattr(model, "halt_value_stats"):
+            model.halt_value_stats = {}
 
+        if self.global_rank == 0:
             if hasattr(model, "gate_stats"):
                 gate_stats = model.gate_stats
                 for gate_key, layer_stats in gate_stats.items():
@@ -788,8 +803,11 @@ class Trainer:
                             evaluation_result_publisher=evaluation_result_publisher,
                             evaluation_result=metrics,
                         )
-                model.gate_stats = {}
-            
+        # Clear gate stats on ALL ranks to prevent memory leaks
+        if hasattr(model, "gate_stats"):
+            model.gate_stats = {}
+        
+        if self.global_rank == 0:
             if hasattr(model, "gate_normalized_stats"):
                 gate_normalized_stats = model.gate_normalized_stats
                 for gate_key, layer_stats in gate_normalized_stats.items():
@@ -813,7 +831,9 @@ class Trainer:
                             evaluation_result_publisher=evaluation_result_publisher,
                             evaluation_result=metrics,
                         )
-                model.gate_normalized_stats = {}
+        # Clear gate normalized stats on ALL ranks to prevent memory leaks
+        if hasattr(model, "gate_normalized_stats"):
+            model.gate_normalized_stats = {}
 
         
 
