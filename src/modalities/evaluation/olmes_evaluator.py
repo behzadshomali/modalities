@@ -22,7 +22,7 @@ from modalities.registry.registry import Registry
 from oe_eval.run_eval import load_task, compute_save_metrics, evaluate
 from oe_eval.default_configs import MODEL_DEFAULTS
 from oe_eval.utils import hash_dict
-from oe_eval.configs.tasks import TASK_CONFIGS
+from oe_eval.configs.tasks import TASK_CONFIGS  
 from oe_eval.configs.task_suites import TASK_SUITE_CONFIGS
 from oe_eval.launch import resolve_task_suite
 from oe_eval.tasks.aggregate_tasks import add_aggregate_tasks
