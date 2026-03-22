@@ -403,6 +403,7 @@ class GPT2LLMConfig(BaseModel):
     do_shifted_input: bool = True
     future_masking_prob: float = 0.0
     use_activation_checkpointing: bool = False
+    aggregation_type: str = "WS"  # WS: weighted_sum, ATT: attention
 
     @model_validator(mode="after")
     def check_divisibility(self) -> "GPT2LLMConfig":
@@ -909,6 +910,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         do_shifted_input: bool = True,
         future_masking_prob: float = 0.0,
         use_activation_checkpointing: bool = False,
+        aggregation_type: str = "WS" # WS: weighted_sum,  ATT:attention
     ):
         """
         Initializes the GroupRecursiveGPT2MTPBlock.
@@ -953,11 +955,13 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
 
         self.use_combined_representation = use_combined_representation
         self.halt_threshold = halt_threshold
+        self.aggregation_type = aggregation_type
         if self.use_combined_representation:
             self.combined_representation_block = CombinedRepresentationGPT2Block(
                 n_embd=n_embd, 
                 num_representations_max=self.max_recurrence,
-                gates_bias=gates_bias
+                gates_bias=gates_bias,
+                aggregation_type=aggregation_type
             )
             self.halt_block = HaltGPT2Block(n_embd=n_embd)
             
@@ -1087,7 +1091,6 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
                     output, 
                     combined_output
                 )
-                
 
                 # Halting probability (lambda_n)
                 lambda_n = self.halt_block(combined_output)
@@ -1170,62 +1173,133 @@ class CombinedRepresentationGPT2Block(nn.Module):
         n_embd: int,
         num_representations_max: int,
         gates_bias: Optional[List[float]] = None,
+        aggregation_type: str = "WS",  # WS: weighted_sum, ATT: attention
+        n_heads: int = 8,
     ):
         super().__init__()
         self.n_embd = n_embd
+        self.n_heads = n_heads
         self.num_representations = num_representations_max
         self.block_type = BlockTypes.COMBINED_REPRESENTATION
+        self.aggregation_type = aggregation_type
+        print(f"Using {aggregation_type} for combining representations in CombinedRepresentationGPT2Block")
 
-        # define learnable gates for combining the representations
-        self.gate_layers = nn.ModuleList([
-            nn.Linear(n_embd, n_embd) for _ in range(num_representations_max)
-        ])
-        self.current_gates = [torch.zeros(n_embd) for _ in self.gate_layers]
-        self.current_gates_normalized = [torch.zeros(n_embd) for _ in self.gate_layers]
-        if gates_bias is not None:
-            assert len(gates_bias) == num_representations_max, "Length of gates_bias should be equal to num_representations_max"
-            self.gate_bias = nn.Parameter(
-                torch.tensor(gates_bias).unsqueeze(1).repeat(1, n_embd)
+        # --- WS-specific ---
+        if aggregation_type == "WS":
+            self.gate_layers = nn.ModuleList([
+                nn.Linear(n_embd, n_embd) for _ in range(num_representations_max)
+            ])
+            if gates_bias is not None:
+                assert len(gates_bias) == num_representations_max, \
+                    "Length of gates_bias should be equal to num_representations_max"
+                self.gate_bias = nn.Parameter(
+                    torch.tensor(gates_bias).unsqueeze(1).repeat(1, n_embd)
+                )
+            else:
+                self.gate_bias = nn.Parameter(torch.zeros(num_representations_max, n_embd))
+
+        if aggregation_type == "ATT":
+            # --- ATT-specific ---
+            self.attn = nn.MultiheadAttention(
+                embed_dim=n_embd,
+                num_heads=n_heads,
+                batch_first=True,
             )
-        else:
-            self.gate_bias = nn.Parameter(torch.zeros(num_representations_max, n_embd)) # bias for each gate
+
+        # --- Shared gate storage (populated by both paths) ---
+        self.current_gates = [torch.zeros(n_embd) for _ in range(num_representations_max)]
+        self.current_gates_normalized = [torch.zeros(n_embd) for _ in range(num_representations_max)]
 
     def reset_current_gates(self):
-        self.current_gates = [torch.zeros(self.n_embd) for _ in self.gate_layers]
-        self.current_gates_normalized = [torch.zeros(self.n_embd) for _ in self.gate_layers]
+        self.current_gates = [torch.zeros(self.n_embd) for _ in range(self.num_representations)]
+        self.current_gates_normalized = [torch.zeros(self.n_embd) for _ in range(self.num_representations)]
 
-    def forward(
-        self, 
-        x: Union[dict[str, Any], torch.Tensor],
-        pre_computed_combined_representation: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, dict[int, torch.Tensor]]:
-        
-        if isinstance(x, dict):
-            representations = x["recurrence_outputs"]
-        else:
-            representations = [x]
-
-
+    # ------------------------------------------------------------------
+    # Aggregation paths
+    # ------------------------------------------------------------------
+    def _forward_ws(
+        self,
+        representations: list,
+        pre_computed_combined_representation: Optional[torch.Tensor],
+    ) -> torch.Tensor:
         combined_h = torch.zeros_like(representations[0])
+
         for i, h in enumerate(representations):
             if (
                 isinstance(pre_computed_combined_representation, (list, tuple))
                 and i < len(pre_computed_combined_representation)
             ):
-                # if the representation is from a previous step, we can use it directly without gating
-                # to do that we should first reconstruct the combined representation up to this step
                 continue
-            
             gate = torch.sigmoid(self.gate_layers[i](h)) * torch.nn.functional.softplus(self.gate_bias[i])
             self.current_gates[i] = gate
-        
-        gates_stack = torch.stack([self.current_gates[i] for i in range(len(representations))], dim=0) # shape: num_representations, batch, seq_len, n_embd
-        gates_normalized = gates_stack / (gates_stack.sum(dim=0, keepdim=True) + 1e-8) # shape: num_representations, batch, seq_len, n_embd
+
+        gates_stack = torch.stack(
+            [self.current_gates[i] for i in range(len(representations))], dim=0
+        )  # (num_repr, B, S, n_embd)
+        gates_normalized = gates_stack / (gates_stack.sum(dim=0, keepdim=True) + 1e-8)
         self.current_gates_normalized = [gates_normalized[i] for i in range(len(representations))]
+
         for i, h in enumerate(representations):
             combined_h = combined_h + gates_normalized[i] * h
-    
+
         return combined_h
+
+    def _forward_att(self, representations: list) -> torch.Tensor:
+        query_repr = representations[0]   # (B, S, n_embd)
+        kv_reprs   = representations[1:]  # K/V sources
+
+        if len(kv_reprs) == 0:
+            return query_repr
+
+        # Stack K/V sources, flattening sources into the sequence dim: (B, num_kv*S, n_embd)
+        B, S, _ = query_repr.shape
+        num_kv = len(kv_reprs)
+        kv_flat = torch.stack(kv_reprs, dim=1).view(B, num_kv * S, self.n_embd)
+
+        # nn.MultiheadAttention expects (B, seq, embd) with batch_first=True
+        # need_weights=True + average_attn_weights=False to get per-head weights
+        combined_h, attn_weights = self.attn(
+            query=query_repr,
+            key=kv_flat,
+            value=kv_flat,
+            need_weights=True,
+            average_attn_weights=False,  # returns (B, n_heads, S, num_kv*S)
+        )
+
+        # --- Store per-source importance in gate fields ---
+        # attn_weights: (B, n_heads, S, num_kv*S) → (B, n_heads, S, num_kv, S)
+        attn_per_source = attn_weights.view(B, self.n_heads, S, num_kv, S)
+        # Average over heads, query positions, kv positions → (B, num_kv)
+        source_importance = attn_per_source.mean(dim=(1, 2, 4))
+        source_importance_norm = source_importance / (source_importance.sum(dim=-1, keepdim=True) + 1e-8)
+
+        self.current_gates = [torch.zeros_like(query_repr) for _ in range(self.num_representations)]
+        self.current_gates_normalized = [torch.zeros_like(query_repr) for _ in range(self.num_representations)]
+        for i in range(num_kv):
+            w      = source_importance[:, i].view(B, 1, 1).expand_as(query_repr)
+            w_norm = source_importance_norm[:, i].view(B, 1, 1).expand_as(query_repr)
+            self.current_gates[i + 1] = w
+            self.current_gates_normalized[i + 1] = w_norm
+
+        return combined_h
+
+    # ------------------------------------------------------------------
+    # Forward
+    # ------------------------------------------------------------------
+    def forward(
+        self,
+        x: Union[dict, torch.Tensor],
+        pre_computed_combined_representation: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+
+        representations = x["recurrence_outputs"] if isinstance(x, dict) else [x]
+
+        if self.aggregation_type == "WS":
+            return self._forward_ws(representations, pre_computed_combined_representation)
+        elif self.aggregation_type == "ATT":
+            return self._forward_att(representations)
+        else:
+            raise ValueError(f"Unknown aggregation_type: {self.aggregation_type!r}. Choose 'WS' or 'ATT'.")
     
 class HaltGPT2Block(nn.Module):
     def __init__(
@@ -1394,6 +1468,7 @@ class GPT2LLM(NNModel):
         do_shifted_input: bool = True,
         future_masking_prob: float = 0.0,
         use_activation_checkpointing: bool = False,
+        aggregation_type: str = "WS",  # WS: weighted_sum, ATT: attention
     ):
         """
         Initializes the GPT2LLM object.
@@ -1456,6 +1531,7 @@ class GPT2LLM(NNModel):
         self.do_shifted_input = do_shifted_input
         self.future_masking_prob = future_masking_prob
         self.use_activation_checkpointing = use_activation_checkpointing
+        self.aggregation_type = aggregation_type
         
         if return_each_recurrence_logits_entropy:
             self.recurrence_logits_entropy_stats = {}
@@ -1570,6 +1646,7 @@ class GPT2LLM(NNModel):
                         do_shifted_input=do_shifted_input,
                         future_masking_prob=future_masking_prob,
                         use_activation_checkpointing=use_activation_checkpointing,
+                        aggregation_type=aggregation_type,
                         **block_arguments
                     )
             elif block_type in [BlockTypes.COMBINED_REPRESENTATION, BlockTypes.HALT]:
