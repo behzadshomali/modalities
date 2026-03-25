@@ -23,13 +23,14 @@ TASKS_TO_RUN = [
     "modalities:base_easy:qa_rc",
     "modalities:base_easy:code_bpb",
     "modalities:base_easy:qa_bpb",
+    "modalities::math_ac"  
 ]
 
 # 2. LIMIT
 EVAL_LIMIT = 128
 
 # 3. BATCH SIZE
-BATCH_SIZE = 8
+BATCH_SIZE = 4
 
 # 4. MAPPING:
 FOLDER_MAPPING = {
@@ -43,7 +44,12 @@ FOLDER_MAPPING = {
 #     # "2026-02-13__16-10-36_6995ab4a053107ec": "ljbcigeo",
 #     # "2026-02-15__19-31-28_6995ab4a053107ec": "v5zeu8gq"
 #     "2026-02-17__17-44-01_304a053dc87afbb6": "0hpuqurm",
-    "2026-02-17__14-33-27_304a053dc87afbb6": "6lutihak"
+    # "2026-02-17__14-33-27_304a053dc87afbb6": "6lutihak"
+    "2026-03-23__14-46-08_4ae0ab4f58ce6dac": "j1av1daf",
+    "2026-03-23__14-44-54_74e7a6b65da9dd2f": "5mwyo6q2",
+    "2026-03-23__14-06-54_542ec6512304bdd2": "0u8yej12",
+    "2026-03-23__12-17-42_4b89ee4fb9772121": "ihb2jgsg",
+
 }
 
 WANDB_FOLDERS = [
