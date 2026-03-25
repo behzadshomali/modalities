@@ -403,7 +403,7 @@ class GPT2LLMConfig(BaseModel):
     do_shifted_input: bool = True
     future_masking_prob: float = 0.0
     use_activation_checkpointing: bool = False
-    aggregation_type: str = "WS"  # WS: weighted_sum, ATT: attention
+    aggregation_type: str = "WS"  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention
 
     @model_validator(mode="after")
     def check_divisibility(self) -> "GPT2LLMConfig":
@@ -910,7 +910,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         do_shifted_input: bool = True,
         future_masking_prob: float = 0.0,
         use_activation_checkpointing: bool = False,
-        aggregation_type: str = "WS" # WS: weighted_sum,  ATT:attention
+        aggregation_type: str = "WS"  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention
     ):
         """
         Initializes the GroupRecursiveGPT2MTPBlock.
@@ -1173,7 +1173,7 @@ class CombinedRepresentationGPT2Block(nn.Module):
         n_embd: int,
         num_representations_max: int,
         gates_bias: Optional[List[float]] = None,
-        aggregation_type: str = "WS",  # WS: weighted_sum, ATT: attention
+        aggregation_type: str = "WS",  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention
         n_heads: int = 8,
     ):
         super().__init__()
@@ -1198,13 +1198,18 @@ class CombinedRepresentationGPT2Block(nn.Module):
             else:
                 self.gate_bias = nn.Parameter(torch.zeros(num_representations_max, n_embd))
 
-        if aggregation_type == "ATT":
-            # --- ATT-specific ---
+        if aggregation_type in ("ATT", "ATT_CROSS"):
+            # --- ATT / ATT_CROSS shared ---
             self.attn = nn.MultiheadAttention(
                 embed_dim=n_embd,
                 num_heads=n_heads,
                 batch_first=True,
             )
+            # Learnable bias added to attention logits before softmax.
+            # repr-0 starts with a large value so it dominates at init;
+            # all others start at 0 and are gradually learned.
+            self.attn_logit_bias = nn.Parameter(torch.zeros(num_representations_max))
+            nn.init.constant_(self.attn_logit_bias[0], 10.0)
 
         # --- Shared gate storage (populated by both paths) ---
         self.current_gates = [torch.zeros(n_embd) for _ in range(num_representations_max)]
@@ -1245,43 +1250,83 @@ class CombinedRepresentationGPT2Block(nn.Module):
         return combined_h
 
     def _forward_att(self, representations: list) -> torch.Tensor:
-        query_repr = representations[0]   # (B, S, n_embd)
-        kv_reprs   = representations[1:]  # K/V sources
+        """Self-attention: all representations attend to each other; output taken from position 0."""
+        if len(representations) == 1:
+            return representations[0]
 
-        if len(kv_reprs) == 0:
-            return query_repr
+        B, S, D = representations[0].shape
+        num_repr = len(representations)
 
-        # Stack K/V sources, flattening sources into the sequence dim: (B, num_kv*S, n_embd)
-        B, S, _ = query_repr.shape
-        num_kv = len(kv_reprs)
-        kv_flat = torch.stack(kv_reprs, dim=1).view(B, num_kv * S, self.n_embd)
+        # (B, S, num_repr, D) → (B*S, num_repr, D)
+        stacked = torch.stack(representations, dim=2)
+        stacked_flat = stacked.view(B * S, num_repr, D)
 
-        # nn.MultiheadAttention expects (B, seq, embd) with batch_first=True
-        # need_weights=True + average_attn_weights=False to get per-head weights
-        combined_h, attn_weights = self.attn(
-            query=query_repr,
-            key=kv_flat,
-            value=kv_flat,
+        # Bias shape (num_repr, num_repr): same column bias added to every query row.
+        attn_mask = self.attn_logit_bias[:num_repr].unsqueeze(0).expand(num_repr, -1)
+
+        # attn_weights: (B*S, n_heads, num_repr, num_repr)
+        out_flat, attn_weights = self.attn(
+            stacked_flat, stacked_flat, stacked_flat,
+            attn_mask=attn_mask,
             need_weights=True,
-            average_attn_weights=False,  # returns (B, n_heads, S, num_kv*S)
+            average_attn_weights=False,
         )
 
-        # --- Store per-source importance in gate fields ---
-        # attn_weights: (B, n_heads, S, num_kv*S) → (B, n_heads, S, num_kv, S)
-        attn_per_source = attn_weights.view(B, self.n_heads, S, num_kv, S)
-        # Average over heads, query positions, kv positions → (B, num_kv)
-        source_importance = attn_per_source.mean(dim=(1, 2, 4))
-        source_importance_norm = source_importance / (source_importance.sum(dim=-1, keepdim=True) + 1e-8)
+        combined_h = out_flat[:, 0, :].view(B, S, D)          # (B, S, D)
 
-        self.current_gates = [torch.zeros_like(query_repr) for _ in range(self.num_representations)]
-        self.current_gates_normalized = [torch.zeros_like(query_repr) for _ in range(self.num_representations)]
-        for i in range(num_kv):
-            w      = source_importance[:, i].view(B, 1, 1).expand_as(query_repr)
-            w_norm = source_importance_norm[:, i].view(B, 1, 1).expand_as(query_repr)
-            self.current_gates[i + 1] = w
-            self.current_gates_normalized[i + 1] = w_norm
+        # Per-source weight: how much position-0 attended to each repr, averaged over heads.
+        weights = attn_weights[:, :, 0, :].mean(dim=1).view(B, S, num_repr)
+        weights_norm = weights / (weights.sum(dim=-1, keepdim=True) + 1e-8)
 
+        self._store_gates(representations, weights, weights_norm, B, S, D, num_repr)
         return combined_h
+
+    def _forward_att_cross(self, representations: list) -> torch.Tensor:
+        """Cross-attention: repr-0 is the query; all representations are keys/values.
+
+        This is more efficient (query length = 1) and semantically cleaner:
+        repr-0 selectively pulls in information from deeper representations.
+        """
+        if len(representations) == 1:
+            return representations[0]
+
+        B, S, D = representations[0].shape
+        num_repr = len(representations)
+
+        # Query: repr-0 only → (B*S, 1, D)
+        query_flat = representations[0].view(B * S, 1, D)
+
+        # Keys/Values: all representations → (B*S, num_repr, D)
+        stacked = torch.stack(representations, dim=2)          # (B, S, num_repr, D)
+        kv_flat = stacked.view(B * S, num_repr, D)
+
+        # Bias shape (1, num_repr): repr-0 attends to itself (position 0) at init.
+        attn_mask = self.attn_logit_bias[:num_repr].unsqueeze(0)  # (1, num_repr)
+
+        # attn_weights: (B*S, n_heads, 1, num_repr)
+        out_flat, attn_weights = self.attn(
+            query_flat, kv_flat, kv_flat,
+            attn_mask=attn_mask,
+            need_weights=True,
+            average_attn_weights=False,
+        )
+
+        combined_h = out_flat[:, 0, :].view(B, S, D)          # (B, S, D)
+
+        # Per-source weight: how much repr-0 attended to each repr, averaged over heads.
+        weights = attn_weights[:, :, 0, :].mean(dim=1).view(B, S, num_repr)
+        weights_norm = weights / (weights.sum(dim=-1, keepdim=True) + 1e-8)
+
+        self._store_gates(representations, weights, weights_norm, B, S, D, num_repr)
+        return combined_h
+
+    def _store_gates(self, representations, weights, weights_norm, B, S, D, num_repr):
+        """Populate current_gates / current_gates_normalized for downstream logging."""
+        self.current_gates = [torch.zeros_like(representations[0]) for _ in range(self.num_representations)]
+        self.current_gates_normalized = [torch.zeros_like(representations[0]) for _ in range(self.num_representations)]
+        for i in range(num_repr):
+            self.current_gates[i] = weights[:, :, i].unsqueeze(-1).expand(B, S, D)
+            self.current_gates_normalized[i] = weights_norm[:, :, i].unsqueeze(-1).expand(B, S, D)
 
     # ------------------------------------------------------------------
     # Forward
@@ -1298,8 +1343,10 @@ class CombinedRepresentationGPT2Block(nn.Module):
             return self._forward_ws(representations, pre_computed_combined_representation)
         elif self.aggregation_type == "ATT":
             return self._forward_att(representations)
+        elif self.aggregation_type == "ATT_CROSS":
+            return self._forward_att_cross(representations)
         else:
-            raise ValueError(f"Unknown aggregation_type: {self.aggregation_type!r}. Choose 'WS' or 'ATT'.")
+            raise ValueError(f"Unknown aggregation_type: {self.aggregation_type!r}. Choose 'WS', 'ATT', or 'ATT_CROSS'.")
     
 class HaltGPT2Block(nn.Module):
     def __init__(
@@ -1468,7 +1515,7 @@ class GPT2LLM(NNModel):
         do_shifted_input: bool = True,
         future_masking_prob: float = 0.0,
         use_activation_checkpointing: bool = False,
-        aggregation_type: str = "WS",  # WS: weighted_sum, ATT: attention
+        aggregation_type: str = "WS",  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention
     ):
         """
         Initializes the GPT2LLM object.
