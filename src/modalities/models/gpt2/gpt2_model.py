@@ -403,7 +403,8 @@ class GPT2LLMConfig(BaseModel):
     do_shifted_input: bool = True
     future_masking_prob: float = 0.0
     use_activation_checkpointing: bool = False
-    aggregation_type: str = "WS"  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention
+    aggregation_type: str = "WS"  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention, ATT_CROSS_EMBD: cross-attention with pre-MTP query
+    use_per_iter_norms: bool = False  # When True, each recurrence iteration gets its own norm before the LM head (used with ATT_CROSS_EMBD)
 
     @model_validator(mode="after")
     def check_divisibility(self) -> "GPT2LLMConfig":
@@ -1015,7 +1016,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             embd = torch.cat([embd, latent_thoughts], dim=1).to(prev_iter_embd.dtype) # seq_len - steps_done + steps_done, embd_dim
             embd = self.embd_norm(embd)
         else:
-            embd = self.embd_norm(embd)
+            embd = self.embd_norm(input_embd)
         
         x = torch.cat([embd, prev_iter_embd], dim=-1).to(prev_iter_embd.dtype)
         x = self.proj(x)
@@ -1064,6 +1065,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         seq_len = x.size(1)
         unhalted_prob = torch.ones(batch_size, seq_len, device=x.device)
         p_n_list = []
+        pre_mtp_embd = x  # hidden state before any recurrence iteration; used as query in ATT_CROSS_EMBD
         for r in range(self.current_recurrence):
             x_before = x
             x_after = self._recurrence_step(
@@ -1088,8 +1090,9 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             if self.use_combined_representation:                
                 output['recurrence_outputs'] = all_recurrence_outputs
                 combined_output = self.combined_representation_block(
-                    output, 
-                    combined_output
+                    output,
+                    combined_output,
+                    pre_mtp_embd=pre_mtp_embd,
                 )
 
                 # Halting probability (lambda_n)
@@ -1198,8 +1201,8 @@ class CombinedRepresentationGPT2Block(nn.Module):
             else:
                 self.gate_bias = nn.Parameter(torch.zeros(num_representations_max, n_embd))
 
-        if aggregation_type in ("ATT", "ATT_CROSS"):
-            # --- ATT / ATT_CROSS shared ---
+        if aggregation_type in ("ATT", "ATT_CROSS", "ATT_CROSS_EMBD"):
+            # --- ATT / ATT_CROSS / ATT_CROSS_EMBD shared ---
             self.attn = nn.MultiheadAttention(
                 embed_dim=n_embd,
                 num_heads=n_heads,
@@ -1209,7 +1212,13 @@ class CombinedRepresentationGPT2Block(nn.Module):
             # repr-0 starts with a large value so it dominates at init;
             # all others start at 0 and are gradually learned.
             self.attn_logit_bias = nn.Parameter(torch.zeros(num_representations_max))
-            nn.init.constant_(self.attn_logit_bias[0], 10.0)
+            nn.init.constant_(self.attn_logit_bias[0], gates_bias[0] if gates_bias is not None else 10.0)
+
+        if aggregation_type == "ATT_CROSS_EMBD":
+            # Per-iteration LayerNorm applied to each ri before it enters as K/V.
+            self.kv_norms = nn.ModuleList([
+                nn.LayerNorm(n_embd) for _ in range(num_representations_max)
+            ])
 
         # --- Shared gate storage (populated by both paths) ---
         self.current_gates = [torch.zeros(n_embd) for _ in range(num_representations_max)]
@@ -1328,6 +1337,69 @@ class CombinedRepresentationGPT2Block(nn.Module):
             self.current_gates[i] = weights[:, :, i].unsqueeze(-1).expand(B, S, D)
             self.current_gates_normalized[i] = weights_norm[:, :, i].unsqueeze(-1).expand(B, S, D)
 
+    @staticmethod
+    def _sinusoidal_iter_pe(pos: int, d_model: int, device, dtype) -> torch.Tensor:
+        """Fixed sinusoidal encoding for iteration index `pos`, shape (d_model,).
+
+        Uses the standard sin/cos formula so no parameters are added:
+            PE[2k]   = sin(pos / 10000^(2k/d_model))
+            PE[2k+1] = cos(pos / 10000^(2k/d_model))
+        """
+        half = (d_model + 1) // 2  # ceil(d_model / 2)
+        i = torch.arange(0, half, device=device, dtype=dtype)
+        div = torch.exp(i * -(math.log(10000.0) / d_model))
+        pe = torch.zeros(d_model, device=device, dtype=dtype)
+        pe[0::2] = torch.sin(pos * div)           # indices 0, 2, 4, ... (half elements)
+        pe[1::2] = torch.cos(pos * div)[:d_model // 2]  # indices 1, 3, 5, ... (floor(d/2) elements)
+        return pe
+
+    def _forward_att_cross_embd(self, representations: list, pre_mtp_embd: torch.Tensor) -> torch.Tensor:
+        """Cross-attention: pre-MTP embedding is the query; per-iter-normed representations are K/V.
+
+        Compared to ATT_CROSS (query=r1), the query here is the hidden state *before* any
+        recurrence iteration, so the aggregation is fully decoupled from the recurrence outputs.
+        Each ri is normalised by its own kv_norm and tagged with a sinusoidal iteration encoding
+        (no extra parameters) so the attention can distinguish iteration depth.
+        A residual from pre_mtp_embd is added to the output so the model can always fall back
+        to the original representation if the recurrence outputs are not yet helpful.
+        """
+        B, S, D = representations[0].shape
+        num_repr = len(representations)
+
+        # Query: pre-MTP embedding → (B*S, 1, D)
+        query_flat = pre_mtp_embd.view(B * S, 1, D)
+
+        # Apply per-iteration norms + sinusoidal iteration encoding, then stack as K/V.
+        # The PE distinguishes "iteration 0" from "iteration 1" etc. without learned params.
+        normed = [
+            self.kv_norms[i](representations[i])
+            + self._sinusoidal_iter_pe(i, D, representations[i].device, representations[i].dtype)
+            for i in range(num_repr)
+        ]
+        kv_flat = torch.stack(normed, dim=2).view(B * S, num_repr, D)  # (B*S, num_repr, D)
+
+        # Bias shape (1, num_repr): repr-0 dominates at init, all others start at 0.
+        attn_mask = self.attn_logit_bias[:num_repr].unsqueeze(0)  # (1, num_repr)
+
+        # attn_weights: (B*S, n_heads, 1, num_repr)
+        out_flat, attn_weights = self.attn(
+            query_flat, kv_flat, kv_flat,
+            attn_mask=attn_mask,
+            need_weights=True,
+            average_attn_weights=False,
+        )
+
+        # Residual from pre-MTP embedding: ensures the model starts as identity and
+        # can always fall back to the original representation.
+        combined_h = out_flat[:, 0, :].view(B, S, D) + pre_mtp_embd
+
+        # Per-source weights averaged over heads → (B, S, num_repr)
+        weights = attn_weights[:, :, 0, :].mean(dim=1).view(B, S, num_repr)
+        weights_norm = weights / (weights.sum(dim=-1, keepdim=True) + 1e-8)
+
+        self._store_gates(representations, weights, weights_norm, B, S, D, num_repr)
+        return combined_h
+
     # ------------------------------------------------------------------
     # Forward
     # ------------------------------------------------------------------
@@ -1335,6 +1407,7 @@ class CombinedRepresentationGPT2Block(nn.Module):
         self,
         x: Union[dict, torch.Tensor],
         pre_computed_combined_representation: Optional[torch.Tensor] = None,
+        pre_mtp_embd: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
 
         representations = x["recurrence_outputs"] if isinstance(x, dict) else [x]
@@ -1345,8 +1418,11 @@ class CombinedRepresentationGPT2Block(nn.Module):
             return self._forward_att(representations)
         elif self.aggregation_type == "ATT_CROSS":
             return self._forward_att_cross(representations)
+        elif self.aggregation_type == "ATT_CROSS_EMBD":
+            assert pre_mtp_embd is not None, "pre_mtp_embd must be provided for ATT_CROSS_EMBD"
+            return self._forward_att_cross_embd(representations, pre_mtp_embd)
         else:
-            raise ValueError(f"Unknown aggregation_type: {self.aggregation_type!r}. Choose 'WS', 'ATT', or 'ATT_CROSS'.")
+            raise ValueError(f"Unknown aggregation_type: {self.aggregation_type!r}. Choose 'WS', 'ATT', 'ATT_CROSS', or 'ATT_CROSS_EMBD'.")
     
 class HaltGPT2Block(nn.Module):
     def __init__(
@@ -1515,7 +1591,8 @@ class GPT2LLM(NNModel):
         do_shifted_input: bool = True,
         future_masking_prob: float = 0.0,
         use_activation_checkpointing: bool = False,
-        aggregation_type: str = "WS",  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention
+        aggregation_type: str = "WS",  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention, ATT_CROSS_EMBD: cross-attention with pre-MTP query
+        use_per_iter_norms: bool = False,  # When True, each recurrence iteration gets its own norm before the LM head
     ):
         """
         Initializes the GPT2LLM object.
@@ -1551,7 +1628,7 @@ class GPT2LLM(NNModel):
         weight_decay_groups = {
             "linear": [".attn", ".mlp", ".lm_head.weight", ".proj", ".gate_layers", ".halt_layer",],
             "embedding": [".wte", ".wpe", ".recurrence_embd", ".latent_thoughts", ".gate_bias",],
-            "layernorm": [".attention_norm", ".ffn_norm", ".lm_head_norm", ".prev_iter_embd_norm", ".embd_norm"],
+            "layernorm": [".attention_norm", ".ffn_norm", ".lm_head_norm", ".prev_iter_embd_norm", ".embd_norm", ".iter_norms", ".kv_norms"],
         }
         super().__init__(weight_decay_groups=weight_decay_groups, seed=seed)
         self.sample_key = sample_key
@@ -1579,7 +1656,8 @@ class GPT2LLM(NNModel):
         self.future_masking_prob = future_masking_prob
         self.use_activation_checkpointing = use_activation_checkpointing
         self.aggregation_type = aggregation_type
-        
+        self.use_per_iter_norms = use_per_iter_norms
+
         if return_each_recurrence_logits_entropy:
             self.recurrence_logits_entropy_stats = {}
 
@@ -1723,6 +1801,16 @@ class GPT2LLM(NNModel):
         else:
             lm_head_norms = lm_head_norm_config.norm_type.value(**dict(lm_head_norm_config.config))
 
+        if use_per_iter_norms:
+            # One norm per recurrence iteration, applied before the LM head.
+            # The combined_output uses the shared lm_head_norm above.
+            iter_norms = nn.ModuleList([
+                lm_head_norm_config.norm_type.value(**dict(lm_head_norm_config.config))
+                for _ in range(self.max_recurrences[-1])
+            ])
+        else:
+            iter_norms = nn.ModuleList()  # empty placeholder; not used
+
         self.transformer = nn.ModuleDict(
             dict(
                 wte=nn.Embedding(num_embeddings=vocab_size, embedding_dim=n_embd),
@@ -1730,6 +1818,7 @@ class GPT2LLM(NNModel):
                 drop=nn.Dropout(dropout),
                 h=nn.ModuleDict({str(layer_idx): blocks_list[layer_idx] for layer_idx in range(len(blocks_list))}),
                 lm_head_norm=lm_head_norms,
+                iter_norms=iter_norms,
                 # NOTE: If we make the bias configurable, we must update the number of parameters calculation
                 # in the test_initialization_fsdp1.py, accordingly.
                 lm_head=nn.Linear(in_features=n_embd, out_features=vocab_size, bias=False),
@@ -2091,29 +2180,58 @@ class GPT2LLM(NNModel):
             final_output["each_recurrence_logits"] = []
             if self.return_each_recurrence_logits_entropy:
                 final_output["each_recurrence_entropy"] = []
-            for r in range(len(each_recurrence_outputs)-1):
-                if self.separate_lm_head_norm:
-                    o = self.transformer.lm_head_norm[r](each_recurrence_outputs[r])
-                else:
-                    o = self.transformer.lm_head_norm(each_recurrence_outputs[r]) if hasattr(self.transformer, "lm_head_norm") else each_recurrence_outputs[r]
-                o = self.transformer.lm_head(o) if hasattr(self.transformer, "lm_head") else o
-                final_output["each_recurrence_logits"].append(o)
-                
+
+            if self.use_per_iter_norms:
+                # ATT_CROSS_EMBD layout:
+                #   [0] = combined_output logits  (shared lm_head_norm, already in h)
+                #   [1] = iter_norms[0](r1) → lm_head  (r1 aligned to t+1, auxiliary)
+                #   [2] = iter_norms[1](r2) → lm_head  (r2 aligned to t+2)
+                #   ...
+                final_output["each_recurrence_logits"].append(h)  # combined first
                 if self.return_each_recurrence_logits_entropy:
-                    entropy = get_logits_entropy(o)
+                    entropy = get_logits_entropy(h)
                     final_output["each_recurrence_entropy"].append(entropy)
                     if self.training:
-                        self.record_recurrence_logits_entropy_stats(r, entropy.detach())
-            
-            final_output["each_recurrence_logits"].append(h) # add the final output as well
+                        self.record_recurrence_logits_entropy_stats(self.max_recurrences[-1]-1, entropy)
+
+                for r in range(len(each_recurrence_outputs)):
+                    o = self.transformer.iter_norms[r](each_recurrence_outputs[r])
+                    o = self.transformer.lm_head(o) if hasattr(self.transformer, "lm_head") else o
+                    final_output["each_recurrence_logits"].append(o)
+
+                    if self.return_each_recurrence_logits_entropy:
+                        entropy = get_logits_entropy(o)
+                        final_output["each_recurrence_entropy"].append(entropy)
+                        if self.training:
+                            self.record_recurrence_logits_entropy_stats(r, entropy.detach())
+            else:
+                # Existing layout:
+                #   [0..K-2] = r1..r_{K-1} logits
+                #   [K-1]    = combined_output logits (appended last)
+                for r in range(len(each_recurrence_outputs)-1):
+                    if self.separate_lm_head_norm:
+                        o = self.transformer.lm_head_norm[r](each_recurrence_outputs[r])
+                    else:
+                        o = self.transformer.lm_head_norm(each_recurrence_outputs[r]) if hasattr(self.transformer, "lm_head_norm") else each_recurrence_outputs[r]
+                    o = self.transformer.lm_head(o) if hasattr(self.transformer, "lm_head") else o
+                    final_output["each_recurrence_logits"].append(o)
+
+                    if self.return_each_recurrence_logits_entropy:
+                        entropy = get_logits_entropy(o)
+                        final_output["each_recurrence_entropy"].append(entropy)
+                        if self.training:
+                            self.record_recurrence_logits_entropy_stats(r, entropy.detach())
+
+                final_output["each_recurrence_logits"].append(h)  # add the final output as well
+                if self.return_each_recurrence_logits_entropy:
+                    entropy = get_logits_entropy(h)
+                    final_output["each_recurrence_entropy"].append(entropy)  # add the final output as well
+                    if self.training:
+                        self.record_recurrence_logits_entropy_stats(self.max_recurrences[-1]-1, entropy)
+
             final_output["each_recurrence_logits"] = torch.stack(final_output["each_recurrence_logits"])
-            
             if self.return_each_recurrence_logits_entropy:
-                entropy = get_logits_entropy(h)
-                final_output["each_recurrence_entropy"].append(entropy) # add the final output as well
                 final_output["each_recurrence_entropy"] = torch.stack(final_output["each_recurrence_entropy"])
-                if self.training:
-                    self.record_recurrence_logits_entropy_stats(self.max_recurrences[-1]-1, entropy)
         
         final_output["gates"] = current_gates if self.use_combined_representation else None
         final_output["gates_normalized"] = current_gates_normalized if self.use_combined_representation else None

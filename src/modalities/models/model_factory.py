@@ -597,6 +597,7 @@ class GPT2ModelFactory:
         future_masking_prob: Optional[float] = 0.0,
         use_activation_checkpointing: Optional[bool] = False,
         aggregation_type: Optional[str] = "WS",
+        use_per_iter_norms: Optional[bool] = False,
     ) -> GPT2LLM:
         config = dict(
             sample_key=sample_key,
@@ -636,7 +637,8 @@ class GPT2ModelFactory:
             do_shifted_input=do_shifted_input,
             future_masking_prob=future_masking_prob,
             use_activation_checkpointing=use_activation_checkpointing,
-            aggregation_type=aggregation_type
+            aggregation_type=aggregation_type,
+            use_per_iter_norms=use_per_iter_norms,
         )
         if use_meta_device and use_weight_tying:
             raise ValueError(

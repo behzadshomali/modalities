@@ -117,6 +117,16 @@ class MTPCrossEntropyLossTemporalDiscountingPonderConfig(CLMCrossEntropyLossConf
     ponder_weight: float = 0.01
     mixed_gate_loss: bool = False
 
+class MTPCrossEntropyLossIterAlignedConfig(CLMCrossEntropyLossConfig):
+    target_key: str
+    prediction_key: str
+    mtp_prediction_key: str = "mtp_logits"
+    mtp_lambda: float
+    discount_factor: float = 0.9
+    mtp_lambda_scheduler: Optional[PydanticMTPLambdaSchedulerIFType] = None
+    efficiency_lambda_scheduler: Optional[PydanticMTPLambdaSchedulerIFType] = None
+    ponder_weight: float = 0.01
+
 
 # Checkpointing
 class SaveEveryKStepsCheckpointingStrategyConfig(BaseModel):

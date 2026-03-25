@@ -34,6 +34,7 @@ from modalities.config.config import (
     CLMCrossEntropyLossConfig,
     CLMCrossEntropyWithPenaltyLossConfig,
     CLMMTPCrossEntropyLossConfig,
+    MTPCrossEntropyLossIterAlignedConfig,
     CLMMTPCrossEntropyLossTemporalDiscountingConfig,
     MTPCrossEntropyLossTemporalDiscountingPonderConfig,
     CombinedDatasetConfig,
@@ -105,7 +106,8 @@ from modalities.loss_functions import (
     CLMRecurrenceWeightedLoss,
     MTPCrossEntropyLoss,
     MTPCrossEntropyLossTemporalDiscounting,
-    MTPCrossEntropyLossTemporalDiscountingPonder
+    MTPCrossEntropyLossTemporalDiscountingPonder,
+    MTPCrossEntropyLossIterAligned
 
 )
 from modalities.models.coca.coca_model import CoCa, CoCaConfig
@@ -275,6 +277,12 @@ COMPONENTS = [
         MTPCrossEntropyLossTemporalDiscountingPonder,
         MTPCrossEntropyLossTemporalDiscountingPonderConfig,
     ),  
+    ComponentEntity(
+        "loss",
+        "clm_mtp_recurrence_loss_iter_aligned",
+        MTPCrossEntropyLossIterAligned,
+        MTPCrossEntropyLossIterAlignedConfig,
+    ),
     # optmizers
     ComponentEntity("optimizer", "adam", OptimizerFactory.get_adam, AdamOptimizerConfig),
     ComponentEntity("optimizer", "adam_w", OptimizerFactory.get_adam_w, AdamWOptimizerConfig),

@@ -803,3 +803,111 @@ class MTPCrossEntropyLossTemporalDiscountingPonder(Loss):
         gates = lm_logits["gates_normalized"]
         pn_tensor = lm_logits.get("pn_tensor", None)  # Optional tensor for mixed gate loss
         return labels, lm_logits, mtp_logits_list, ponder_regularization_loss, gates, pn_tensor
+
+
+class MTPCrossEntropyLossIterAligned(Loss):
+    """Loss for the ATT_CROSS_EMBD aggregation mode.
+
+    Expected mtp_logits_list layout (K recurrence iterations):
+        [0]  combined_output logits  -> x_{t+1}  (main CE, no shift)
+        [1]  r1 logits               -> x_{t+1}  (auxiliary CE, no shift; aligns r1 to t+1)
+        [2]  r2 logits               -> x_{t+2}  (discounted CE, shift=1)
+        ...
+        [K]  rK logits               -> x_{t+K}  (discounted CE, shift=K-1)
+
+    All auxiliary/MTP heads are weighted by mtp_lambda * discount_factor^shift.
+    """
+
+    def __init__(
+        self,
+        target_key: str,
+        prediction_key: str,
+        mtp_prediction_key: str = "mtp_logits",
+        mtp_lambda: float = 1.0,
+        discount_factor: float = 0.9,
+        mtp_lambda_scheduler=None,
+        efficiency_lambda_scheduler=None,
+        ponder_weight: float = 0.01,
+        tag: str = "MTPCrossEntropyLossIterAligned",
+    ):
+        super().__init__(tag)
+        self.target_key = target_key
+        self.prediction_key = prediction_key
+        self.mtp_prediction_key = mtp_prediction_key
+        self.mtp_lambda = mtp_lambda
+        self.discount_factor = discount_factor
+        self.mtp_lambda_scheduler = mtp_lambda_scheduler
+        self.efficiency_lambda_scheduler = efficiency_lambda_scheduler
+        self.ponder_weight = ponder_weight
+        self.loss_fun = CrossEntropyLoss(reduction="mean")
+
+    def __call__(self, *args, **kwargs) -> torch.Tensor:
+        labels, _, mtp_logits_list, ponder_regularization_loss, gates, pn_tensor = self._parse_arguments(args, kwargs)
+
+        labels = labels.to(mtp_logits_list[0].device).long()
+
+        # --- 1. Main head: combined_output -> x_{t+1} ---
+        main_loss = self.loss_fun(
+            mtp_logits_list[0].contiguous().view(-1, mtp_logits_list[0].size(-1)),
+            labels.contiguous().view(-1),
+        )
+
+        current_mtp_lambda = (
+            self.mtp_lambda_scheduler.mtp_lambda
+            if self.mtp_lambda_scheduler is not None
+            else self.mtp_lambda
+        )
+        current_ponder_weight = (
+            self.efficiency_lambda_scheduler.mtp_lambda
+            if self.efficiency_lambda_scheduler is not None
+            else self.ponder_weight
+        )
+
+        # --- 2. Auxiliary + MTP heads ---
+        # index 1 -> r1 -> x_{t+1} (shift=0)
+        # index 2 -> r2 -> x_{t+2} (shift=1)
+        # index i -> ri -> x_{t+i} (shift=i-1)
+        mtp_loss_sum = 0.0
+        for i, mtp_logits in enumerate(mtp_logits_list[1:]):
+            shift = i  # i=0: r1->t+1, i=1: r2->t+2, ...
+            mtp_logits = mtp_logits.contiguous()
+
+            if shift == 0:
+                slice_logits = mtp_logits
+                slice_labels = labels.contiguous()
+            else:
+                slice_logits = mtp_logits[:, :-shift, :].contiguous()
+                slice_labels = labels[:, shift:].contiguous()
+
+            if slice_labels.size(1) > 0:
+                current_mtp_loss = self.loss_fun(
+                    slice_logits.view(-1, slice_logits.size(-1)),
+                    slice_labels.view(-1),
+                )
+                mtp_loss_sum += current_mtp_loss * (self.discount_factor ** shift)
+
+        num_aux_heads = len(mtp_logits_list) - 1 # Exclude combined_output head
+        mtp_loss_avg = mtp_loss_sum / num_aux_heads if num_aux_heads > 0 else 0.0
+        mtp_term = current_mtp_lambda * mtp_loss_avg
+        ponder_term = current_ponder_weight * ponder_regularization_loss
+        total_loss = main_loss + mtp_term + ponder_term
+
+        return total_loss, main_loss, mtp_term, ponder_term
+
+    def _parse_arguments(self, args, kwargs):
+        if len(args) == 1 and isinstance(args[0], InferenceResultBatch):
+            forward_batch = args[0]
+            labels = forward_batch.get_targets(self.target_key)
+            lm_logits = forward_batch.get_predictions(self.prediction_key)
+        elif "forward_batch" in kwargs and isinstance(kwargs["forward_batch"], InferenceResultBatch):
+            forward_batch = kwargs["forward_batch"]
+            labels = forward_batch.get_targets(self.target_key)
+            lm_logits = forward_batch.get_predictions(self.prediction_key)
+        else:
+            raise TypeError("Invalid arguments for MTPCrossEntropyLossIterAligned.__call__")
+
+        mtp_logits_list = lm_logits[self.mtp_prediction_key]
+        ponder_regularization_loss = lm_logits["ponder_regularization_loss"]
+        gates = lm_logits["gates_normalized"]
+        pn_tensor = lm_logits.get("pn_tensor", None)
+        return labels, lm_logits, mtp_logits_list, ponder_regularization_loss, gates, pn_tensor
