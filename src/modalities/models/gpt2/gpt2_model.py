@@ -1208,11 +1208,6 @@ class CombinedRepresentationGPT2Block(nn.Module):
                 num_heads=n_heads,
                 batch_first=True,
             )
-            # Learnable bias added to attention logits before softmax.
-            # repr-0 starts with a large value so it dominates at init;
-            # all others start at 0 and are gradually learned.
-            self.attn_logit_bias = nn.Parameter(torch.zeros(num_representations_max))
-            nn.init.constant_(self.attn_logit_bias[0], gates_bias[0] if gates_bias is not None else 10.0)
 
         if aggregation_type == "ATT_CROSS_EMBD":
             # Per-iteration LayerNorm applied to each ri before it enters as K/V.
@@ -1270,13 +1265,9 @@ class CombinedRepresentationGPT2Block(nn.Module):
         stacked = torch.stack(representations, dim=2)
         stacked_flat = stacked.view(B * S, num_repr, D)
 
-        # Bias shape (num_repr, num_repr): same column bias added to every query row.
-        attn_mask = self.attn_logit_bias[:num_repr].unsqueeze(0).expand(num_repr, -1)
-
         # attn_weights: (B*S, n_heads, num_repr, num_repr)
         out_flat, attn_weights = self.attn(
             stacked_flat, stacked_flat, stacked_flat,
-            attn_mask=attn_mask,
             need_weights=True,
             average_attn_weights=False,
         )
@@ -1309,13 +1300,9 @@ class CombinedRepresentationGPT2Block(nn.Module):
         stacked = torch.stack(representations, dim=2)          # (B, S, num_repr, D)
         kv_flat = stacked.view(B * S, num_repr, D)
 
-        # Bias shape (1, num_repr): repr-0 attends to itself (position 0) at init.
-        attn_mask = self.attn_logit_bias[:num_repr].unsqueeze(0)  # (1, num_repr)
-
         # attn_weights: (B*S, n_heads, 1, num_repr)
         out_flat, attn_weights = self.attn(
             query_flat, kv_flat, kv_flat,
-            attn_mask=attn_mask,
             need_weights=True,
             average_attn_weights=False,
         )
@@ -1378,13 +1365,9 @@ class CombinedRepresentationGPT2Block(nn.Module):
         ]
         kv_flat = torch.stack(normed, dim=2).view(B * S, num_repr, D)  # (B*S, num_repr, D)
 
-        # Bias shape (1, num_repr): repr-0 dominates at init, all others start at 0.
-        attn_mask = self.attn_logit_bias[:num_repr].unsqueeze(0)  # (1, num_repr)
-
         # attn_weights: (B*S, n_heads, 1, num_repr)
         out_flat, attn_weights = self.attn(
             query_flat, kv_flat, kv_flat,
-            attn_mask=attn_mask,
             need_weights=True,
             average_attn_weights=False,
         )
