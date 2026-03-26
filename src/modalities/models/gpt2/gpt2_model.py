@@ -404,7 +404,7 @@ class GPT2LLMConfig(BaseModel):
     future_masking_prob: float = 0.0
     use_activation_checkpointing: bool = False
     aggregation_type: str = "WS"  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention, ATT_CROSS_EMBD: cross-attention with pre-MTP query
-    use_per_iter_norms: bool = False  # When True, each recurrence iteration gets its own norm before the LM head (used with ATT_CROSS_EMBD)
+    use_per_iter_norms: bool = False  # When True, each recurrence iteration gets its own prev_iter_embd_norm inside GroupRecursiveGPT2MTPBlock
 
     @model_validator(mode="after")
     def check_divisibility(self) -> "GPT2LLMConfig":
@@ -911,7 +911,8 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         do_shifted_input: bool = True,
         future_masking_prob: float = 0.0,
         use_activation_checkpointing: bool = False,
-        aggregation_type: str = "WS"  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention
+        aggregation_type: str = "WS",  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention
+        use_per_iter_norms: bool = False,  # When True, each recurrence iteration gets its own prev_iter_embd_norm
     ):
         """
         Initializes the GroupRecursiveGPT2MTPBlock.
@@ -946,13 +947,17 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         self.track_recurrence_embd_similarity = track_recurrence_embd_similarity
 
         self.return_each_recurrence_output = return_each_recurrence_output # should be used only when iterating over the entire model
+        self.use_per_iter_norms = use_per_iter_norms
         self.embd_norm = nn.LayerNorm(n_embd)
+        norm_dim = n_embd + 1 if use_recurrence_embedding else n_embd
         if self.use_recurrence_embedding:
             self.proj = nn.Linear(n_embd*2 + 1, n_embd)
-            self.prev_iter_embd_norm = nn.LayerNorm(n_embd+1)
         else:
             self.proj = nn.Linear(n_embd*2, n_embd)
-            self.prev_iter_embd_norm = nn.LayerNorm(n_embd)
+        if use_per_iter_norms:
+            self.prev_iter_embd_norm = nn.ModuleList([nn.LayerNorm(norm_dim) for _ in range(max_recurrence)])
+        else:
+            self.prev_iter_embd_norm = nn.LayerNorm(norm_dim)
 
         self.use_combined_representation = use_combined_representation
         self.halt_threshold = halt_threshold
@@ -974,7 +979,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
 
         # self._check_max_recurrence()
 
-    def _recurrence_step(self, prev_iter_embd, input_embd, steps_done):
+    def _recurrence_step(self, prev_iter_embd, input_embd, steps_done, step_idx: int = 0):
         """One recurrence step with or without gradient tracking."""
         if self.use_recurrence_embedding:
             normalized_steps_done = steps_done / self.max_recurrence
@@ -985,7 +990,10 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             )
             prev_iter_embd = torch.cat([steps_feature, prev_iter_embd], dim=-1).to(prev_iter_embd.dtype)
 
-        prev_iter_embd = self.prev_iter_embd_norm(prev_iter_embd)
+        if self.use_per_iter_norms:
+            prev_iter_embd = self.prev_iter_embd_norm[step_idx](prev_iter_embd)
+        else:
+            prev_iter_embd = self.prev_iter_embd_norm(prev_iter_embd)
         
         if self.do_shifted_input:
             effective_steps = min(int(steps_done), input_embd.size(1))
@@ -1069,9 +1077,10 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         for r in range(self.current_recurrence):
             x_before = x
             x_after = self._recurrence_step(
-                prev_iter_embd=x, 
+                prev_iter_embd=x,
                 input_embd=kwargs.get("tokens_repres"),
-                steps_done=torch.tensor(r, device=x.device)
+                steps_done=torch.tensor(r, device=x.device),
+                step_idx=r,
             )
             x = x_after
 
@@ -1372,9 +1381,7 @@ class CombinedRepresentationGPT2Block(nn.Module):
             average_attn_weights=False,
         )
 
-        # Residual from pre-MTP embedding: ensures the model starts as identity and
-        # can always fall back to the original representation.
-        combined_h = out_flat[:, 0, :].view(B, S, D) + pre_mtp_embd
+        combined_h = out_flat[:, 0, :].view(B, S, D)
 
         # Per-source weights averaged over heads → (B, S, num_repr)
         weights = attn_weights[:, :, 0, :].mean(dim=1).view(B, S, num_repr)
@@ -1611,7 +1618,7 @@ class GPT2LLM(NNModel):
         weight_decay_groups = {
             "linear": [".attn", ".mlp", ".lm_head.weight", ".proj", ".gate_layers", ".halt_layer",],
             "embedding": [".wte", ".wpe", ".recurrence_embd", ".latent_thoughts", ".gate_bias",],
-            "layernorm": [".attention_norm", ".ffn_norm", ".lm_head_norm", ".prev_iter_embd_norm", ".embd_norm", ".iter_norms", ".kv_norms"],
+            "layernorm": [".attention_norm", ".ffn_norm", ".lm_head_norm", ".prev_iter_embd_norm", ".embd_norm", ".kv_norms"],
         }
         super().__init__(weight_decay_groups=weight_decay_groups, seed=seed)
         self.sample_key = sample_key
@@ -1755,6 +1762,7 @@ class GPT2LLM(NNModel):
                         future_masking_prob=future_masking_prob,
                         use_activation_checkpointing=use_activation_checkpointing,
                         aggregation_type=aggregation_type,
+                        use_per_iter_norms=use_per_iter_norms,
                         **block_arguments
                     )
             elif block_type in [BlockTypes.COMBINED_REPRESENTATION, BlockTypes.HALT]:
@@ -1784,16 +1792,6 @@ class GPT2LLM(NNModel):
         else:
             lm_head_norms = lm_head_norm_config.norm_type.value(**dict(lm_head_norm_config.config))
 
-        if use_per_iter_norms:
-            # One norm per recurrence iteration, applied before the LM head.
-            # The combined_output uses the shared lm_head_norm above.
-            iter_norms = nn.ModuleList([
-                lm_head_norm_config.norm_type.value(**dict(lm_head_norm_config.config))
-                for _ in range(self.max_recurrences[-1])
-            ])
-        else:
-            iter_norms = nn.ModuleList()  # empty placeholder; not used
-
         self.transformer = nn.ModuleDict(
             dict(
                 wte=nn.Embedding(num_embeddings=vocab_size, embedding_dim=n_embd),
@@ -1801,7 +1799,6 @@ class GPT2LLM(NNModel):
                 drop=nn.Dropout(dropout),
                 h=nn.ModuleDict({str(layer_idx): blocks_list[layer_idx] for layer_idx in range(len(blocks_list))}),
                 lm_head_norm=lm_head_norms,
-                iter_norms=iter_norms,
                 # NOTE: If we make the bias configurable, we must update the number of parameters calculation
                 # in the test_initialization_fsdp1.py, accordingly.
                 lm_head=nn.Linear(in_features=n_embd, out_features=vocab_size, bias=False),
@@ -2167,9 +2164,11 @@ class GPT2LLM(NNModel):
             if self.use_per_iter_norms:
                 # ATT_CROSS_EMBD layout:
                 #   [0] = combined_output logits  (shared lm_head_norm, already in h)
-                #   [1] = iter_norms[0](r1) → lm_head  (r1 aligned to t+1, auxiliary)
-                #   [2] = iter_norms[1](r2) → lm_head  (r2 aligned to t+2)
+                #   [1] = lm_head_norm(r1) → lm_head  (r1 aligned to t+1, auxiliary)
+                #   [2] = lm_head_norm(r2) → lm_head  (r2 aligned to t+2)
                 #   ...
+                # Per-iteration input normalization is handled inside GroupRecursiveGPT2MTPBlock
+                # via per-iteration prev_iter_embd_norms; the shared lm_head_norm is used here.
                 final_output["each_recurrence_logits"].append(h)  # combined first
                 if self.return_each_recurrence_logits_entropy:
                     entropy = get_logits_entropy(h)
@@ -2178,7 +2177,7 @@ class GPT2LLM(NNModel):
                         self.record_recurrence_logits_entropy_stats(self.max_recurrences[-1]-1, entropy)
 
                 for r in range(len(each_recurrence_outputs)):
-                    o = self.transformer.iter_norms[r](each_recurrence_outputs[r])
+                    o = self.transformer.lm_head_norm(each_recurrence_outputs[r]) if hasattr(self.transformer, "lm_head_norm") else each_recurrence_outputs[r]
                     o = self.transformer.lm_head(o) if hasattr(self.transformer, "lm_head") else o
                     final_output["each_recurrence_logits"].append(o)
 
