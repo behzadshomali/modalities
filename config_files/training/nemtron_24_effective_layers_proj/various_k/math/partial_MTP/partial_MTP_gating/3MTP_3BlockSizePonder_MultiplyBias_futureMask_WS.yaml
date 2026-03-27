@@ -28,8 +28,8 @@ settings:
     enforce_last_step_evaluated: false
     enforce_last_step_checkpointed: false
   step_profile:
-    gradient_accumulation_steps: 40
-    local_train_micro_batch_size: 3
+    gradient_accumulation_steps: 12
+    local_train_micro_batch_size: 10
     sequence_length: 2048
     dp_degree:
       instance_key: dp_degree
@@ -257,7 +257,7 @@ loss_fn:
     mtp_prediction_key: each_recurrence_logits
     mtp_lambda: 0.5  # Initial value (will be overridden by scheduler)
     discount_factor: 1.0
-    ponder_weight: 0.05 # Initial value (will be overridden by scheduler)
+    ponder_weight: 0 #0.05 # Initial value (will be overridden by scheduler)
     # mtp_lambda_scheduler:
     #   instance_key: mtp_lambda_scheduler
     #   pass_type: BY_REFERENCE

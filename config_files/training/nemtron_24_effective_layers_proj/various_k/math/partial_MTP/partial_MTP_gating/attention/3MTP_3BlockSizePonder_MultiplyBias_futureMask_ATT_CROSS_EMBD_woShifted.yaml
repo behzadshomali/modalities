@@ -21,15 +21,15 @@ settings:
   intervals:
     training_log_interval_in_steps: 10
     checkpointing_interval_in_steps: 9320 # 3 checkpoints
-    evaluation_interval_in_steps: 500
+    evaluation_interval_in_steps: 3500
   consistency_enforcement:
     enforce_tokens_per_step_consistency: true
     enforce_last_step_logged: false
     enforce_last_step_evaluated: false
     enforce_last_step_checkpointed: false
   step_profile:
-    gradient_accumulation_steps: 12
-    local_train_micro_batch_size: 10
+    gradient_accumulation_steps: 10
+    local_train_micro_batch_size: 12
     sequence_length: 2048
     dp_degree:
       instance_key: dp_degree
@@ -191,7 +191,7 @@ test_dataset:
     # - component_key: dataset
     #   variant_key: packed_mem_map_dataset_continuous
     #   config:
-    #     raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part19_eval.pbin
+    #     raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_23_part_00_SMALL_EVAL.pbin
     #     sequence_length: ${settings.step_profile.sequence_length}
     #     sample_key:  ${settings.referencing_keys.sample_key}
 
@@ -258,12 +258,13 @@ loss_fn:
     mtp_lambda: 0.5  # Initial value (will be overridden by scheduler)
     discount_factor: 1.0
     ponder_weight: 0 # 0.05 # Initial value (will be overridden by scheduler)
+    align_first_head: false
     # mtp_lambda_scheduler:
     #   instance_key: mtp_lambda_scheduler
     #   pass_type: BY_REFERENCE
-    # efficiency_lambda_scheduler:
-    #   instance_key: efficiency_lambda_scheduler
-    #   pass_type: BY_REFERENCE
+    efficiency_lambda_scheduler:
+      instance_key: efficiency_lambda_scheduler
+      pass_type: BY_REFERENCE
 
 device_mesh:
   component_key: device_mesh
@@ -471,7 +472,7 @@ evaluation_subscriber:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_MATH_PartialMTP_Gating
     mode: ${settings.wandb_mode}
-    experiment_id: woShift_${model_raw.config.aggregation_type}_LinearStyleGateNorm_mask${model_raw.config.future_masking_prob}_MultiplyBias=${model_raw.config.gates_bias}_PonderLoss_HaltingTh=${model_raw.config.halt_threshold}_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_recurEmbed=${model_raw.config.use_recurrence_embedding}_${settings.experiment_id}
+    experiment_id: alf${loss_fn.config.align_first_head}_woShift_${model_raw.config.aggregation_type}_LinearStyleGateNorm_mask${model_raw.config.future_masking_prob}_MultiplyBias=${model_raw.config.gates_bias}_PonderLoss_HaltingTh=${model_raw.config.halt_threshold}_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_recurEmbed=${model_raw.config.use_recurrence_embedding}_${settings.experiment_id}
     tags: [257M, Partial_MTP, 2Token, GradProj]
     directory: ${settings.wandb_path}
     config_file_path: ${settings.config_file_path}
@@ -487,13 +488,13 @@ evaluation_subscriber:
 #     training_end_portion: 0.25
 #     total_steps: ${settings.training_target.num_target_steps}
 
-# efficiency_lambda_scheduler:
-#   component_key: scheduler
-#   variant_key: sigmoid_mtp_lambda
-#   config:
-#     start_value: 0.1
-#     end_value: 0.05
-#     steepness: 20.0
-#     training_start_portion: 0.0
-#     training_end_portion: 0.4
-#     total_steps: ${settings.training_target.num_target_steps}
+efficiency_lambda_scheduler:
+  component_key: scheduler
+  variant_key: sigmoid_mtp_lambda
+  config:
+    start_value: 0.5
+    end_value: 0.005
+    steepness: 20.0
+    training_start_portion: 0.0
+    training_end_portion: 0.1
+    total_steps: ${settings.training_target.num_target_steps}

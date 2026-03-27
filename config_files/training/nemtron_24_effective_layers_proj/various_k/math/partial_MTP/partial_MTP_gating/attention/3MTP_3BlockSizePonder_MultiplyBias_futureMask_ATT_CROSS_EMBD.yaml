@@ -191,7 +191,7 @@ test_dataset:
     # - component_key: dataset
     #   variant_key: packed_mem_map_dataset_continuous
     #   config:
-    #     raw_data_path: ${settings.data_dir_math}/Nemotron-CC-Math-v1_train_4plus_part19_eval.pbin
+    #     raw_data_path: ${settings.data_dir_cc}/Nemotron-CC-highQuality-sampled_data_part_23_part_00_SMALL_EVAL.pbin
     #     sequence_length: ${settings.step_profile.sequence_length}
     #     sample_key:  ${settings.referencing_keys.sample_key}
 
@@ -402,9 +402,9 @@ model_raw:
     use_combined_representation: true
     halt_threshold: 0.5
     aggregation_type: ATT_CROSS_EMBD
-    use_per_iter_norms: false
+    use_per_iter_norms: true
     gates_bias: [0.55, -5.0, -5.0] # Set the biases for the gates (one for each gate).
-    future_masking_prob: 0.3
+    future_masking_prob: 0.3 # Probability of applying future masking in the attention mechanism (1.0 means always apply).
 
 lr_scheduler:
   component_key: scheduler
