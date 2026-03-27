@@ -828,6 +828,7 @@ class MTPCrossEntropyLossIterAligned(Loss):
         mtp_lambda_scheduler=None,
         efficiency_lambda_scheduler=None,
         ponder_weight: float = 0.01,
+        align_first_head: bool = True,
         tag: str = "MTPCrossEntropyLossIterAligned",
     ):
         super().__init__(tag)
@@ -839,6 +840,7 @@ class MTPCrossEntropyLossIterAligned(Loss):
         self.mtp_lambda_scheduler = mtp_lambda_scheduler
         self.efficiency_lambda_scheduler = efficiency_lambda_scheduler
         self.ponder_weight = ponder_weight
+        self.align_first_head = align_first_head
         self.loss_fun = CrossEntropyLoss(reduction="mean")
 
     def __call__(self, *args, **kwargs) -> torch.Tensor:
@@ -868,7 +870,12 @@ class MTPCrossEntropyLossIterAligned(Loss):
         # index 2 -> r2 -> x_{t+2} (shift=1)
         # index i -> ri -> x_{t+i} (shift=i-1)
         mtp_loss_sum = 0.0
-        for i, mtp_logits in enumerate(mtp_logits_list[1:]):
+        cnt = 0
+        if self.align_first_head:
+            begin_idx = 1  # Start from index 1, which aligns with t+1
+        else:
+            begin_idx = 2  # Start from index 2, which aligns with t+2 (first head is treated as main head without shift)
+        for i, mtp_logits in enumerate(mtp_logits_list[begin_idx:]):
             shift = i  # i=0: r1->t+1, i=1: r2->t+2, ...
             mtp_logits = mtp_logits.contiguous()
 
@@ -885,9 +892,10 @@ class MTPCrossEntropyLossIterAligned(Loss):
                     slice_labels.view(-1),
                 )
                 mtp_loss_sum += current_mtp_loss * (self.discount_factor ** shift)
+                cnt += 1
 
         num_aux_heads = len(mtp_logits_list) - 1 # Exclude combined_output head
-        mtp_loss_avg = mtp_loss_sum / num_aux_heads if num_aux_heads > 0 else 0.0
+        mtp_loss_avg = mtp_loss_sum / cnt if cnt > 0 else 0.0
         mtp_term = current_mtp_lambda * mtp_loss_avg
         ponder_term = current_ponder_weight * ponder_regularization_loss
         total_loss = main_loss + mtp_term + ponder_term

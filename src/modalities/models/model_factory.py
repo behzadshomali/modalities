@@ -598,6 +598,7 @@ class GPT2ModelFactory:
         use_activation_checkpointing: Optional[bool] = False,
         aggregation_type: Optional[str] = "WS",
         use_per_iter_norms: Optional[bool] = False,
+        use_latent_autoregressive: Optional[bool] = False,
     ) -> GPT2LLM:
         config = dict(
             sample_key=sample_key,
@@ -639,6 +640,7 @@ class GPT2ModelFactory:
             use_activation_checkpointing=use_activation_checkpointing,
             aggregation_type=aggregation_type,
             use_per_iter_norms=use_per_iter_norms,
+            use_latent_autoregressive=use_latent_autoregressive,
         )
         if use_meta_device and use_weight_tying:
             raise ValueError(

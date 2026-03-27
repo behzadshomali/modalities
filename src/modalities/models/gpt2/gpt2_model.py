@@ -405,6 +405,7 @@ class GPT2LLMConfig(BaseModel):
     use_activation_checkpointing: bool = False
     aggregation_type: str = "WS"  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention, ATT_CROSS_EMBD: cross-attention with pre-MTP query
     use_per_iter_norms: bool = False  # When True, each recurrence iteration gets its own prev_iter_embd_norm inside GroupRecursiveGPT2MTPBlock
+    use_latent_autoregressive: bool = False  # When True, step r>0 uses combined_output from step r-1 as input_embd instead of tokens_repres
 
     @model_validator(mode="after")
     def check_divisibility(self) -> "GPT2LLMConfig":
@@ -913,6 +914,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         use_activation_checkpointing: bool = False,
         aggregation_type: str = "WS",  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention
         use_per_iter_norms: bool = False,  # When True, each recurrence iteration gets its own prev_iter_embd_norm
+        use_latent_autoregressive: bool = False,  # When True, step r>0 uses combined_output from step r-1 as input_embd
     ):
         """
         Initializes the GroupRecursiveGPT2MTPBlock.
@@ -976,11 +978,18 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         self.do_shifted_input = do_shifted_input
         self.future_masking_prob = future_masking_prob
         self.use_activation_checkpointing = use_activation_checkpointing
+        self.use_latent_autoregressive = use_latent_autoregressive
 
         # self._check_max_recurrence()
 
     def _recurrence_step(self, prev_iter_embd, input_embd, steps_done, step_idx: int = 0):
-        """One recurrence step with or without gradient tracking."""
+        """
+        One recurrence step with or without gradient tracking.
+        
+        Args:
+            prev_iter_embd: the output of the previous recurrence iteration
+            input_embd: the input embedding to the current recurrence iteration (either the original input (x_{1:t}) or the output of the previous iteration based on use_latent_autoregressive)
+        """
         if self.use_recurrence_embedding:
             normalized_steps_done = steps_done / self.max_recurrence
             steps_feature = normalized_steps_done.view(1, 1, 1).expand(
@@ -1076,9 +1085,13 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         pre_mtp_embd = x  # hidden state before any recurrence iteration; used as query in ATT_CROSS_EMBD
         for r in range(self.current_recurrence):
             x_before = x
+            if self.use_latent_autoregressive and r > 0:
+                current_input_embd = x_before  # previous recurrence output (x_after_{r-1})
+            else:
+                current_input_embd = kwargs.get("tokens_repres")
             x_after = self._recurrence_step(
                 prev_iter_embd=x,
-                input_embd=kwargs.get("tokens_repres"),
+                input_embd=current_input_embd,
                 steps_done=torch.tensor(r, device=x.device),
                 step_idx=r,
             )
@@ -1096,7 +1109,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
                 mse_similarity = nn.functional.mse_loss(x_before, x_after, reduction='mean')
                 mse_similarities.append(mse_similarity)
 
-            if self.use_combined_representation:                
+            if self.use_combined_representation and r == self.current_recurrence - 1:  # for the time being, we don't train/use the halting block            
                 output['recurrence_outputs'] = all_recurrence_outputs
                 combined_output = self.combined_representation_block(
                     output,
@@ -1104,24 +1117,24 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
                     pre_mtp_embd=pre_mtp_embd,
                 )
 
-                # Halting probability (lambda_n)
-                lambda_n = self.halt_block(combined_output)
+                # # Halting probability (lambda_n)
+                # lambda_n = self.halt_block(combined_output)
 
-                # # Force halt at last step
-                # if r == self.max_recurrence - 1:
-                #     lambda_n = torch.ones_like(lambda_n)
+                # # # Force halt at last step
+                # # if r == self.max_recurrence - 1:
+                # #     lambda_n = torch.ones_like(lambda_n)
 
-                p_n = unhalted_prob * lambda_n
+                # p_n = unhalted_prob * lambda_n
                 
-                unhalted_prob = unhalted_prob * (1 - lambda_n)
+                # unhalted_prob = unhalted_prob * (1 - lambda_n)
 
-                p_n_list.append(p_n)
+                # p_n_list.append(p_n)
 
-                # break the loop if halting probability is above the threshold
-                # if not self.training and self.halt_threshold is not None:
-                #     if (lambda_n.mean() > self.halt_threshold or r == self.max_recurrence - 1):
-                #         output['halt_signal'][r] = lambda_n.mean().item()
-                #         break    
+                # # break the loop if halting probability is above the threshold
+                # # if not self.training and self.halt_threshold is not None:
+                # #     if (lambda_n.mean() > self.halt_threshold or r == self.max_recurrence - 1):
+                # #         output['halt_signal'][r] = lambda_n.mean().item()
+                # #         break    
 
                 
         if self.use_combined_representation:
@@ -1173,9 +1186,10 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             
 
         output["output"] = x.to(type_)
-        missing_halt_signals_cnt = self.current_recurrence - len(p_n_list)
-        for _ in range(missing_halt_signals_cnt):
-            p_n_list.append(torch.ones(batch_size, seq_len, device=x.device))
+        
+        # missing_halt_signals_cnt = self.current_recurrence - len(p_n_list)
+        # for _ in range(missing_halt_signals_cnt):
+        #     p_n_list.append(torch.ones(batch_size, seq_len, device=x.device))
         
         return output, ponder_regularization_losses, p_n_list
 
@@ -1583,6 +1597,7 @@ class GPT2LLM(NNModel):
         use_activation_checkpointing: bool = False,
         aggregation_type: str = "WS",  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention, ATT_CROSS_EMBD: cross-attention with pre-MTP query
         use_per_iter_norms: bool = False,  # When True, each recurrence iteration gets its own norm before the LM head
+        use_latent_autoregressive: bool = False,  # When True, step r>0 uses combined_output from step r-1 as input_embd
     ):
         """
         Initializes the GPT2LLM object.
@@ -1647,6 +1662,7 @@ class GPT2LLM(NNModel):
         self.use_activation_checkpointing = use_activation_checkpointing
         self.aggregation_type = aggregation_type
         self.use_per_iter_norms = use_per_iter_norms
+        self.use_latent_autoregressive = use_latent_autoregressive
 
         if return_each_recurrence_logits_entropy:
             self.recurrence_logits_entropy_stats = {}
@@ -1763,6 +1779,7 @@ class GPT2LLM(NNModel):
                         use_activation_checkpointing=use_activation_checkpointing,
                         aggregation_type=aggregation_type,
                         use_per_iter_norms=use_per_iter_norms,
+                        use_latent_autoregressive=use_latent_autoregressive,
                         **block_arguments
                     )
             elif block_type in [BlockTypes.COMBINED_REPRESENTATION, BlockTypes.HALT]:

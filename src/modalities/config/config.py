@@ -126,6 +126,7 @@ class MTPCrossEntropyLossIterAlignedConfig(CLMCrossEntropyLossConfig):
     mtp_lambda_scheduler: Optional[PydanticMTPLambdaSchedulerIFType] = None
     efficiency_lambda_scheduler: Optional[PydanticMTPLambdaSchedulerIFType] = None
     ponder_weight: float = 0.01
+    align_first_head: bool = True
 
 
 # Checkpointing
