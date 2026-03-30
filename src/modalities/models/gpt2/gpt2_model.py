@@ -1085,12 +1085,18 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         pre_mtp_embd = x  # hidden state before any recurrence iteration; used as query in ATT_CROSS_EMBD
         for r in range(self.current_recurrence):
             x_before = x
-            if self.use_latent_autoregressive and r > 0:
-                current_input_embd = x_before * 0.01 + x_before.detach() * 0.99  # previous recurrence output (x_after_{r-1})
-            else:
-                current_input_embd = kwargs.get("tokens_repres")
+            # if self.use_latent_autoregressive and r > 0:
+            # if r > 0:
+            #     current_input_embd = x_before * 0.01 + x_before.detach() * 0.99  # previous recurrence output (x_after_{r-1})
+            # else:
+            if r > 0: # input coming from the previous iteration, we detach it to prevent gradients from flowing through the recurrence iterations
+                input_x = x * 0.01 + x.detach() * 0.99  # previous recurrence output (x_after_{r-1})
+            else: # first iteration, input is the original input
+                input_x = x
+            
+            current_input_embd = kwargs.get("tokens_repres")
             x_after = self._recurrence_step(
-                prev_iter_embd=x,
+                prev_iter_embd=input_x,
                 input_embd=current_input_embd,
                 steps_done=torch.tensor(r, device=x.device),
                 step_idx=r,
