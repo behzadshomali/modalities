@@ -1086,7 +1086,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         for r in range(self.current_recurrence):
             x_before = x
             if self.use_latent_autoregressive and r > 0:
-                current_input_embd = x_before  # previous recurrence output (x_after_{r-1})
+                current_input_embd = x_before * 0.01 + x_before.detach() * 0.99  # previous recurrence output (x_after_{r-1})
             else:
                 current_input_embd = kwargs.get("tokens_repres")
             x_after = self._recurrence_step(
