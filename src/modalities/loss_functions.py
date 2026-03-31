@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 from typing import List, Tuple, overload
 
 import torch
+from torch import nn
+import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
 
 from modalities.batch import InferenceResultBatch
@@ -875,7 +877,7 @@ class MTPCrossEntropyLossIterAligned(Loss):
             begin_idx = 1  # Start from index 1, which aligns with t+1
         else:
             begin_idx = 2  # Start from index 2, which aligns with t+2 (first head is treated as main head without shift)
-        for i, mtp_logits in enumerate(mtp_logits_list[begin_idx:]):
+        for i, mtp_logits in enumerate(mtp_logits_list[begin_idx:], start=begin_idx-1):
             shift = i  # i=0: r1->t+1, i=1: r2->t+2, ...
             mtp_logits = mtp_logits.contiguous()
 
