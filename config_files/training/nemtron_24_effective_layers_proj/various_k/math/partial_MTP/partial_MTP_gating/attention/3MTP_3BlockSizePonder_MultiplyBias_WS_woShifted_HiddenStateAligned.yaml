@@ -250,21 +250,24 @@ checkpoint_saving:
 
 loss_fn:
   component_key: loss
-  variant_key: clm_mtp_recurrence_loss_iter_aligned
+  variant_key: clm_mtp_recurrence_loss_iter_hidden_state_aligned
   config:
     target_key: ${settings.referencing_keys.target_key}
     prediction_key: ${settings.referencing_keys.prediction_key}
     mtp_prediction_key: each_recurrence_logits
     mtp_lambda: 0.5  # Initial value (will be overridden by scheduler)
-    discount_factor: 1.0
-    ponder_weight: 0.005 # 0.05 # Initial value (will be overridden by scheduler)
+    discount_factor: 1
+    ponder_weight: 0.05 # Initial value (will be overridden by scheduler)
     align_first_head: true
+    alignment_type: cosine
+    hidden_state_alignment_weight: 0.1
+
     # mtp_lambda_scheduler:
     #   instance_key: mtp_lambda_scheduler
     #   pass_type: BY_REFERENCE
-    efficiency_lambda_scheduler:
-      instance_key: efficiency_lambda_scheduler
-      pass_type: BY_REFERENCE
+    # efficiency_lambda_scheduler:
+    #   instance_key: efficiency_lambda_scheduler
+    #   pass_type: BY_REFERENCE
 
 device_mesh:
   component_key: device_mesh
@@ -402,12 +405,12 @@ model_raw:
     use_last_iteration_output_as_final: false
     use_combined_representation: true
     halt_threshold: 0.5
-    aggregation_type: ATT_CROSS_EMBD
-    use_per_iter_norms: true
-    use_latent_autoregressive: true
-    do_shifted_input: false
+    aggregation_type: WS
     gates_bias: [0.55, -5.0, -5.0] # Set the biases for the gates (one for each gate).
-    future_masking_prob: 0.0 # Probability of applying future masking in the attention mechanism (1.0 means always apply).
+    do_shifted_input: false
+    use_latent_autoregressive: true
+    use_per_iter_norms: true
+    use_per_iter_norms_tokens_embds: true
 
 lr_scheduler:
   component_key: scheduler
@@ -473,7 +476,7 @@ evaluation_subscriber:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_MATH_PartialMTP_Gating
     mode: ${settings.wandb_mode}
-    experiment_id: Disc${loss_fn.config.discount_factor}_DetachIter_LatentAutoReg${model_raw.config.use_latent_autoregressive}_${model_raw.config.aggregation_type}_LinearStyleGateNorm_mask${model_raw.config.future_masking_prob}_MultiplyBias=${model_raw.config.gates_bias}_PonderLoss_HaltingTh=${model_raw.config.halt_threshold}_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_recurEmbed=${model_raw.config.use_recurrence_embedding}_${settings.experiment_id}
+    experiment_id: AlignedHidden${loss_fn.config.hidden_state_alignment_weight}_NormEmbds${model_raw.config.use_per_iter_norms_tokens_embds}_DiscFactor${loss_fn.config.discount_factor}_LA_${model_raw.config.use_latent_autoregressive}_alf${loss_fn.config.align_first_head}_woShift_${model_raw.config.aggregation_type}_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_${settings.experiment_id}
     tags: [257M, Partial_MTP, 2Token, GradProj]
     directory: ${settings.wandb_path}
     config_file_path: ${settings.config_file_path}
@@ -489,13 +492,13 @@ evaluation_subscriber:
 #     training_end_portion: 0.25
 #     total_steps: ${settings.training_target.num_target_steps}
 
-efficiency_lambda_scheduler:
-  component_key: scheduler
-  variant_key: sigmoid_mtp_lambda
-  config:
-    start_value: 0.5
-    end_value: 0.005
-    steepness: 20.0
-    training_start_portion: 0.0
-    training_end_portion: 0.1
-    total_steps: ${settings.training_target.num_target_steps}
+# efficiency_lambda_scheduler:
+#   component_key: scheduler
+#   variant_key: sigmoid_mtp_lambda
+#   config:
+#     start_value: 0.5
+#     end_value: 0.005
+#     steepness: 20.0
+#     training_start_portion: 0.0
+#     training_end_portion: 0.1
+#     total_steps: ${settings.training_target.num_target_steps}
