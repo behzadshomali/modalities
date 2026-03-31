@@ -405,6 +405,7 @@ class GPT2LLMConfig(BaseModel):
     use_activation_checkpointing: bool = False
     aggregation_type: str = "WS"  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention, ATT_CROSS_EMBD: cross-attention with pre-MTP query
     use_per_iter_norms: bool = False  # When True, each recurrence iteration gets its own prev_iter_embd_norm inside GroupRecursiveGPT2MTPBlock
+    use_per_iter_norms_tokens_embds: bool = False  # When True, each recurrence iteration gets its own embd_norm for tokens_embds inside GroupRecursiveGPT2MTPBlock
     use_latent_autoregressive: bool = False  # When True, step r>0 uses combined_output from step r-1 as input_embd instead of tokens_repres
 
     @model_validator(mode="after")
@@ -915,6 +916,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         aggregation_type: str = "WS",  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention
         use_per_iter_norms: bool = False,  # When True, each recurrence iteration gets its own prev_iter_embd_norm
         use_latent_autoregressive: bool = False,  # When True, step r>0 uses combined_output from step r-1 as input_embd
+        use_per_iter_norms_tokens_embds: bool = False,  # When True, each recurrence iteration gets its own embd_norm for tokens_embds
     ):
         """
         Initializes the GroupRecursiveGPT2MTPBlock.
@@ -950,7 +952,8 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
 
         self.return_each_recurrence_output = return_each_recurrence_output # should be used only when iterating over the entire model
         self.use_per_iter_norms = use_per_iter_norms
-        self.embd_norm = nn.LayerNorm(n_embd)
+        self.use_per_iter_norms_tokens_embds = use_per_iter_norms_tokens_embds
+        
         norm_dim = n_embd + 1 if use_recurrence_embedding else n_embd
         if self.use_recurrence_embedding:
             self.proj = nn.Linear(n_embd*2 + 1, n_embd)
@@ -960,6 +963,11 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             self.prev_iter_embd_norm = nn.ModuleList([nn.LayerNorm(norm_dim) for _ in range(max_recurrence)])
         else:
             self.prev_iter_embd_norm = nn.LayerNorm(norm_dim)
+
+        if use_per_iter_norms_tokens_embds:
+            self.embd_norm = nn.ModuleList([nn.LayerNorm(n_embd) for _ in range(max_recurrence)])
+        else:
+            self.embd_norm = nn.LayerNorm(n_embd)
 
         self.use_combined_representation = use_combined_representation
         self.halt_threshold = halt_threshold
@@ -1031,9 +1039,15 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
                 embd = torch.where(mask, surrogates.to(embd.dtype), embd)
 
             embd = torch.cat([embd, latent_thoughts], dim=1).to(prev_iter_embd.dtype) # seq_len - steps_done + steps_done, embd_dim
-            embd = self.embd_norm(embd)
+            if self.use_per_iter_norms_tokens_embds:
+                embd = self.embd_norm[step_idx](embd)
+            else:
+                embd = self.embd_norm(embd)
         else:
-            embd = self.embd_norm(input_embd)
+            if self.use_per_iter_norms_tokens_embds:
+                embd = self.embd_norm[step_idx](input_embd)
+            else:
+                embd = self.embd_norm(input_embd)
         
         x = torch.cat([embd, prev_iter_embd], dim=-1).to(prev_iter_embd.dtype)
         x = self.proj(x)
@@ -1603,6 +1617,7 @@ class GPT2LLM(NNModel):
         use_activation_checkpointing: bool = False,
         aggregation_type: str = "WS",  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention, ATT_CROSS_EMBD: cross-attention with pre-MTP query
         use_per_iter_norms: bool = False,  # When True, each recurrence iteration gets its own norm before the LM head
+        use_per_iter_norms_tokens_embds: bool = False,  # When True, each recurrence iteration gets its own norm for the input token embeddings (applied after shifting and adding latent thoughts)
         use_latent_autoregressive: bool = False,  # When True, step r>0 uses combined_output from step r-1 as input_embd
     ):
         """
@@ -1668,6 +1683,7 @@ class GPT2LLM(NNModel):
         self.use_activation_checkpointing = use_activation_checkpointing
         self.aggregation_type = aggregation_type
         self.use_per_iter_norms = use_per_iter_norms
+        self.use_per_iter_norms_tokens_embds = use_per_iter_norms_tokens_embds
         self.use_latent_autoregressive = use_latent_autoregressive
 
         if return_each_recurrence_logits_entropy:
@@ -1785,6 +1801,7 @@ class GPT2LLM(NNModel):
                         use_activation_checkpointing=use_activation_checkpointing,
                         aggregation_type=aggregation_type,
                         use_per_iter_norms=use_per_iter_norms,
+                        use_per_iter_norms_tokens_embds=use_per_iter_norms_tokens_embds,
                         use_latent_autoregressive=use_latent_autoregressive,
                         **block_arguments
                     )
@@ -2180,6 +2197,7 @@ class GPT2LLM(NNModel):
             final_output["recurrence_embedding_cosine_similarity"] = torch.stack(recurrence_cosine_similarities).mean() if recurrence_cosine_similarities else torch.tensor(0.0)
             final_output["recurrence_embedding_mse_similarity"] = torch.stack(recurrence_mse_similarities).mean() if recurrence_mse_similarities else torch.tensor(0.0)
         if self.return_each_recurrence_output:
+            final_output["each_recurrence_hidden_states"] = each_recurrence_outputs  # pre-lm_head, [K, B, S, D]
             final_output["each_recurrence_logits"] = []
             if self.return_each_recurrence_logits_entropy:
                 final_output["each_recurrence_entropy"] = []
@@ -2247,7 +2265,11 @@ class GPT2LLM(NNModel):
         if self.use_last_iteration_output_as_final:
             final_output["logits"] = h
         else:
-            final_output["logits"] = final_output["each_recurrence_logits"][0] 
+            final_output["logits"] = final_output["each_recurrence_logits"][0]
+
+        if hasattr(self.transformer, "wte"):
+            final_output["wte_weight"] = self.transformer.wte
+
         return final_output if len(final_output) > 1 else h
     
 
