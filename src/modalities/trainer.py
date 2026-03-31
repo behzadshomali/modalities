@@ -291,7 +291,7 @@ class Trainer:
         loss_fun: Loss,
         micro_batch_id: int,
         scheduled_pipeline: Optional[Pipeline] = None,
-    ) -> tuple[bool, int, Optional[torch.Tensor], Optional[torch.Tensor]]:
+    ) -> tuple[bool, int, Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Conducts a training step on batch of data.
 
@@ -306,7 +306,7 @@ class Trainer:
                 operate the model. Defaults to None.
 
         Returns:
-            tuple[bool, int, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+            tuple[bool, int, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
                 A tuple containing the following:
                     - step_performed (bool): Indicates whether a training step was performed.
                     - num_train_steps_done (int): The number of training steps done.
@@ -336,8 +336,11 @@ class Trainer:
             loss = loss_fun(result_batch)
             
             aux_loss_list = None
+            hidden_state_alignment_loss = None
             if isinstance(loss, tuple):
-                if len(loss) == 4:
+                if len(loss) == 5:
+                    loss, ce_loss, aux_loss, aux_loss_list, hidden_state_alignment_loss = loss
+                elif len(loss) == 4:
                     loss, ce_loss, aux_loss, aux_loss_list = loss
                 elif len(loss) == 3:
                     loss, ce_loss, aux_loss = loss
@@ -390,7 +393,7 @@ class Trainer:
 
         self._track_recurrences_on_wandb(model, self.evaluation_result_publisher, num_train_steps_done)
 
-        return step_performed, num_train_steps_done, loss, gradient_norm_score, ce_loss, aux_loss, aux_loss_list
+        return step_performed, num_train_steps_done, loss, gradient_norm_score, ce_loss, aux_loss, aux_loss_list, hidden_state_alignment_loss
 
     def train(
         self,
@@ -427,6 +430,7 @@ class Trainer:
         cumulated_losses_ce = self._reset_tracked_losses()
         cumulated_losses_aux = self._reset_tracked_losses()
         cumulated_losses_aux2 = self._reset_tracked_losses()
+        cumulated_losses_hidden_state_alignment = self._reset_tracked_losses()
 
         # throughput
         thoughput_aggregator = Aggregator[ThroughputAggregationKeys]()
@@ -465,6 +469,7 @@ class Trainer:
                 ce_loss, 
                 aux_loss,
                 aux_loss2, # or ponder loss if using the temporal discounting ponder loss
+                hidden_state_alignment_loss
             ) = self._train_batch(
                 batch=batch,
                 model=model,
@@ -489,9 +494,11 @@ class Trainer:
                     cumulated_losses_ce[0] += ce_loss.item()
                     cumulated_losses_aux[0] += aux_loss.item() if isinstance(aux_loss, torch.Tensor) else aux_loss
                     cumulated_losses_aux2[0] += aux_loss2.item() if aux_loss2 is not None else -10.0
+                    cumulated_losses_hidden_state_alignment[0] += hidden_state_alignment_loss.item() if hidden_state_alignment_loss is not None else -10.0
                     cumulated_losses_ce[-1] += 1
                     cumulated_losses_aux[-1] += 1
                     cumulated_losses_aux2[-1] += 1
+                    cumulated_losses_hidden_state_alignment[-1] += 1
 
             # gradient norm is already synced across all ranks
             if gradient_norm_score is not None:
@@ -531,6 +538,7 @@ class Trainer:
                 aux_loss_value = aux_loss.item() if isinstance(aux_loss, torch.Tensor) else aux_loss
                 cumulated_losses_aux[1] = aux_loss_value if aux_loss is not None else 0.0
                 cumulated_losses_aux2[1] = aux_loss2.item() if aux_loss2 is not None else -10.0
+                cumulated_losses_hidden_state_alignment[1] = hidden_state_alignment_loss.item() if hidden_state_alignment_loss is not None else -10.0
 
                 reduced_losses = Reducer.reduce(
                     tensor=cumulated_losses,
@@ -569,6 +577,16 @@ class Trainer:
                         [t[0] / t[-1], t[1] / dist.get_world_size() * self.pp_degree]
                     ),
                 )
+                reduced_losses_hidden_state_alignment = Reducer.reduce(
+                    tensor=cumulated_losses_hidden_state_alignment,
+                    operation=dist.ReduceOp.SUM,
+                    # 1.) summed batch loss / (num batches * (world size / dp_degree))
+                    # 2.) last batch loss / (world size / pp_degree)
+                    post_processing_fun=lambda t: torch.stack(
+                        [t[0] / t[-1], t[1] / dist.get_world_size() * self.pp_degree]
+                    ),
+                )
+
                 losses = {
                     "train loss avg": ResultItem(reduced_losses[0], decimal_places=2),
                     "train loss last": ResultItem(reduced_losses[1], decimal_places=2),
@@ -578,6 +596,8 @@ class Trainer:
                     "train aux2 loss avg": ResultItem(reduced_losses_aux2[0], decimal_places=2),
                     "train aux loss last": ResultItem(reduced_losses_aux[1], decimal_places=2),
                     "train aux2 loss last": ResultItem(reduced_losses_aux2[1], decimal_places=2),
+                    "train hidden state alignment loss avg": ResultItem(reduced_losses_hidden_state_alignment[0], decimal_places=2),
+                    "train hidden state alignment loss last": ResultItem(reduced_losses_hidden_state_alignment[1], decimal_places=2),
                 }
 
                 consumed_tokens = torch.tensor(training_progress.num_seen_tokens_total)

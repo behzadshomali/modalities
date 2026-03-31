@@ -128,6 +128,19 @@ class MTPCrossEntropyLossIterAlignedConfig(CLMCrossEntropyLossConfig):
     ponder_weight: float = 0.01
     align_first_head: bool = True
 
+class MTPCrossEntropyLossIterHiddenStateAlignedConfig(CLMCrossEntropyLossConfig):
+    target_key: str
+    prediction_key: str
+    mtp_prediction_key: str = "mtp_logits"
+    mtp_lambda: float
+    discount_factor: float = 0.9
+    mtp_lambda_scheduler: Optional[PydanticMTPLambdaSchedulerIFType] = None
+    efficiency_lambda_scheduler: Optional[PydanticMTPLambdaSchedulerIFType] = None
+    ponder_weight: float = 0.01
+    align_first_head: bool = True
+    hidden_state_alignment_weight: float = 0.1
+    alignment_type: str = "cosine"
+
 
 # Checkpointing
 class SaveEveryKStepsCheckpointingStrategyConfig(BaseModel):
