@@ -966,7 +966,7 @@ class MTPCrossEntropyLossIterHiddenStateAligned(Loss):
 
     def _compute_alignment_loss(
         self,
-        mtp_logits_list: list[torch.Tensor],  # [combined_representation, r1, r2, ...], each [B, S, D]
+        mtp_logits_list: list[torch.Tensor],  # [r1, r2, ...], each [B, S, D]
         labels: torch.Tensor,                     # [B, S] token ids
         token_embedding_table: nn.Embedding,  # the model's input embedding (weight detached at point of use)
     ) -> torch.Tensor:
@@ -983,16 +983,16 @@ class MTPCrossEntropyLossIterHiddenStateAligned(Loss):
         count = 0
 
         if self.align_first_head:
-            begin_idx = 1  # Start from index 1, which aligns with t+1
+            begin_idx = 0  # Start from index 0, which aligns with t+1
         else:
-            begin_idx = 2  # Start from index 2, which aligns with t+2 (first head is treated as main head without shift)
+            begin_idx = 1  # Start from index 1, which aligns with t+2 (first head is treated as main head without shift)
         for r, hidden in enumerate(mtp_logits_list[begin_idx:], start=begin_idx):
             # hidden: [B, S, D]
             # For iteration r, target token at position i is labels[:, i+r]
             if r >= labels.size(1):
                 break
             
-            shift = r-1
+            shift = r
             target_ids = labels[:, shift:]              # [B, S - shift]
             valid_len = target_ids.size(1)
             hidden_trimmed = hidden[:, :valid_len]  # [B, S - shift, D]
