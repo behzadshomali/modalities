@@ -659,6 +659,8 @@ class Trainer:
                 cumulated_losses_aux = self._reset_tracked_losses()
                 cumulated_losses_aux2 = self._reset_tracked_losses()
                 cumulated_losses = self._reset_tracked_losses()
+                cumulated_losses_hidden_state_alignment = self._reset_tracked_losses()
+
             if step_performed:
                 evaluation_callback(num_train_steps_done=training_progress.num_seen_steps_total)
                 checkpointing_callback(training_progress=training_progress)
