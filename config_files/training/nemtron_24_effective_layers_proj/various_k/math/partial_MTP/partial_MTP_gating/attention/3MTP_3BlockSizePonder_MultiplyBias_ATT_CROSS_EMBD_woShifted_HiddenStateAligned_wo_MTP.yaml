@@ -405,7 +405,7 @@ model_raw:
     use_last_iteration_output_as_final: false
     use_combined_representation: true
     halt_threshold: 0.5
-    aggregation_type: WS
+    aggregation_type: ATT_CROSS_EMBD
     gates_bias: [0.55, -5.0, -5.0] # Set the biases for the gates (one for each gate).
     do_shifted_input: false
     use_latent_autoregressive: true
