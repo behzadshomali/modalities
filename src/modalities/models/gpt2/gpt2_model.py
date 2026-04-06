@@ -1104,10 +1104,9 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             x_before = x
             if self.iter_gradient_flow_weight < 1.0 and r > 0:
                 current_weight = self.iter_gradient_flow_weight ** (r)
-                current_input_embd = x_before * current_weight + x_before.detach() * (1 - current_weight)
+                input_x = x_before * current_weight + x_before.detach() * (1 - current_weight)
             else:
-                current_input_embd = x_before   
-            input_x = x  # full gradient flow between iterations; 1/L LNS scaling provides stability
+                input_x = x_before   
             
             current_input_embd = kwargs.get("tokens_repres")
             x_after = self._recurrence_step(
