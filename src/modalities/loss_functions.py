@@ -729,16 +729,20 @@ class MTPCrossEntropyLossTemporalDiscountingPonder(Loss):
             else self.ponder_weight
         )
 
-        for i, mtp_logits in enumerate(mtp_logits_list[1:]): # Skip the first one as its loss is already calculated in ce_loss
-            # i=0 -> Head predicts 2nd future token (t+2)
-            # i=1 -> Head predicts 3rd future token (t+3)
-            
-            # The 'distance' from the Main Head target is i + 1
-            shift = i + 1
+        for i, mtp_logits in enumerate(mtp_logits_list[1:]):
+            # Aligned with IterAligned convention:
+            # i=0 -> r1 -> x_{t+1} (shift=0, same NTP target)
+            # i=1 -> r2 -> x_{t+2} (shift=1)
+            # i=K-1 -> rK -> x_{t+K} (shift=K-1)
+            shift = i
             
             mtp_logits = mtp_logits.contiguous()
-            slice_logits = mtp_logits[:, :-shift, :].contiguous()
-            slice_labels = labels[:, shift:].contiguous()
+            if shift == 0:
+                slice_logits = mtp_logits
+                slice_labels = labels.contiguous()
+            else:
+                slice_logits = mtp_logits[:, :-shift, :].contiguous()
+                slice_labels = labels[:, shift:].contiguous()
             
             if slice_labels.size(1) > 0:
                 current_mtp_loss = self.loss_fun(
@@ -966,14 +970,14 @@ class MTPCrossEntropyLossIterHiddenStateAligned(Loss):
 
     def _compute_alignment_loss(
         self,
-        mtp_logits_list: list[torch.Tensor],  # [r1, r2, ...], each [B, S, D]
-        labels: torch.Tensor,                     # [B, S] token ids
-        token_embedding_table: nn.Embedding,  # the model's input embedding (weight detached at point of use)
+        recurrence_hidden_states: list[torch.Tensor],  # [r1, r2, ...], each [B, S, D] — pre-LM-head hidden states
+        labels: torch.Tensor,                          # [B, S] token ids
+        alignment_weight_source: nn.Module,            # nn.Linear (LM head) or nn.Embedding (input embd); alignment targets come from .weight
     ) -> torch.Tensor:
         """
         For iteration r, the hidden state at position i should be close
         to the embedding of the token it's predicting: x_{i+r+1}.
-        
+
         Since labels are already shifted (labels[i] = x_{i+1}), we need:
           - r=0: targets = labels[:, 0:]   (predict x_{t+1})
           - r=1: targets = labels[:, 1:]   (predict x_{t+2})
@@ -986,7 +990,7 @@ class MTPCrossEntropyLossIterHiddenStateAligned(Loss):
             begin_idx = 0  # Start from index 0, which aligns with t+1
         else:
             begin_idx = 1  # Start from index 1, which aligns with t+2 (first head is treated as main head without shift)
-        for r, hidden in enumerate(mtp_logits_list[begin_idx:], start=begin_idx):
+        for r, hidden in enumerate(recurrence_hidden_states[begin_idx:], start=begin_idx):
             # hidden: [B, S, D]
             # For iteration r, target token at position i is labels[:, i+r]
             if r >= labels.size(1):
@@ -997,7 +1001,7 @@ class MTPCrossEntropyLossIterHiddenStateAligned(Loss):
             valid_len = target_ids.size(1)
             hidden_trimmed = hidden[:, :valid_len]  # [B, S - shift, D]
             with torch.no_grad():
-                weight = token_embedding_table.weight
+                weight = alignment_weight_source.weight
                 if hasattr(weight, "full_tensor"):
                     weight = weight.full_tensor()  # gather sharded DTensor to a plain tensor
                 target_embd = F.embedding(target_ids, weight)  # [B, S - shift, D]
@@ -1023,7 +1027,7 @@ class MTPCrossEntropyLossIterHiddenStateAligned(Loss):
         return total_alignment_loss / count if count > 0 else torch.tensor(0.0)
 
     def __call__(self, *args, **kwargs) -> torch.Tensor:
-        labels, _, mtp_logits_list, ponder_regularization_loss, gates, pn_tensor, token_embedding_table, recurrence_outputs = self._parse_arguments(args, kwargs)
+        labels, _, mtp_logits_list, ponder_regularization_loss, gates, pn_tensor, alignment_weight_source, recurrence_outputs = self._parse_arguments(args, kwargs)
 
         labels = labels.to(mtp_logits_list[0].device).long()
 
@@ -1080,7 +1084,7 @@ class MTPCrossEntropyLossIterHiddenStateAligned(Loss):
         alignment_loss = self._compute_alignment_loss(
             recurrence_outputs, 
             labels, 
-            token_embedding_table
+            alignment_weight_source
         )
         alignment_term = self.hidden_state_alignment_weight * alignment_loss
     
@@ -1090,12 +1094,10 @@ class MTPCrossEntropyLossIterHiddenStateAligned(Loss):
         total_loss = main_loss + mtp_term + ponder_term + alignment_term
 
 
-        return \
-            total_loss, \
-            main_loss, \
-            (mtp_term / current_mtp_lambda * cnt - ntp_mtp_loss) / (cnt - 1) if cnt > 1 else 0.0, \
-            ponder_term/current_ponder_weight, \
-            alignment_term/self.hidden_state_alignment_weight
+        mtp_only_loss = (mtp_term / current_mtp_lambda * cnt - ntp_mtp_loss) / (cnt - 1) if cnt > 1 else 0.0
+        raw_ponder = ponder_term / current_ponder_weight if current_ponder_weight != 0.0 else ponder_term
+        raw_alignment = alignment_term / self.hidden_state_alignment_weight if self.hidden_state_alignment_weight != 0.0 else alignment_term
+        return total_loss, main_loss, mtp_only_loss, raw_ponder, raw_alignment
 
     def _parse_arguments(self, args, kwargs):
         if len(args) == 1 and isinstance(args[0], InferenceResultBatch):
@@ -1113,7 +1115,12 @@ class MTPCrossEntropyLossIterHiddenStateAligned(Loss):
         ponder_regularization_loss = lm_logits["ponder_regularization_loss"]
         gates = lm_logits["gates_normalized"]
         pn_tensor = lm_logits.get("pn_tensor", None)
-        token_embedding_table = lm_logits.get("wte_weight", None)  # Expecting the model to pass the embedding table weights for alignment loss
+        token_embedding_table = lm_logits.get("wte_weight", None)  # Input embeddings (fallback)
+        lm_head_module = lm_logits.get("lm_head_weight", None)  # LM head (preferred for alignment)
+        # Prefer LM head weights for alignment: aligns hidden states with W_lm,
+        # the same space the CE loss optimises against.  Falls back to W_e if
+        # the model doesn't expose the LM head (e.g. weight-tying makes them equal).
+        alignment_weight_source = lm_head_module if lm_head_module is not None else token_embedding_table
         recurrence_outputs = lm_logits.get("each_recurrence_hidden_states", None)  # List of hidden states for each recurrence iteration
 
-        return labels, lm_logits, mtp_logits_list, ponder_regularization_loss, gates, pn_tensor, token_embedding_table, recurrence_outputs
+        return labels, lm_logits, mtp_logits_list, ponder_regularization_loss, gates, pn_tensor, alignment_weight_source, recurrence_outputs
