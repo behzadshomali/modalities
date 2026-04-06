@@ -28,8 +28,8 @@ settings:
     enforce_last_step_evaluated: false
     enforce_last_step_checkpointed: false
   step_profile:
-    gradient_accumulation_steps: 40
-    local_train_micro_batch_size: 3
+    gradient_accumulation_steps: 10 # two gpus
+    local_train_micro_batch_size: 6
     sequence_length: 2048
     dp_degree:
       instance_key: dp_degree
@@ -380,7 +380,7 @@ model_raw:
         normalized_shape: ${model_raw.config.n_embd}
         eps: 1.0e-05
     use_weight_tying: false
-    use_LNS: true
+    use_LNS: False
     track_recurrence_embd_similarity: true
 
 lr_scheduler:
@@ -474,7 +474,7 @@ evaluation_subscriber:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_MATH_PartialMTP_Gating
     mode: ${settings.wandb_mode}
-    experiment_id: 266M_BASELINE_k=${model_raw.config.n_layer}_${settings.experiment_id}
+    experiment_id: woLNS_266M_BASELINE_k=${model_raw.config.n_layer}_${settings.experiment_id}
     directory: ${settings.wandb_path}
     config_file_path: ${settings.config_file_path}
 

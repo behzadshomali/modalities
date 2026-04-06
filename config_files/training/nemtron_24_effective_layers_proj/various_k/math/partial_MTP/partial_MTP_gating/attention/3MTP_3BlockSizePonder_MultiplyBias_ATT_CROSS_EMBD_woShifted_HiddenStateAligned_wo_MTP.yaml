@@ -28,7 +28,7 @@ settings:
     enforce_last_step_evaluated: false
     enforce_last_step_checkpointed: false
   step_profile:
-    gradient_accumulation_steps: 5 # two gpus
+    gradient_accumulation_steps: 10 # one gpu
     local_train_micro_batch_size: 12
     sequence_length: 2048
     dp_degree:
@@ -398,7 +398,6 @@ model_raw:
     recurrent_blocks_max_recurrences: 3
     
     use_recurrence_embedding: true
-    use_LNS: true
     track_recurrence_embd_similarity: false
     return_each_recurrence_output: true
     separate_lm_head_norm: false
@@ -411,6 +410,8 @@ model_raw:
     use_latent_autoregressive: true
     use_per_iter_norms: true
     use_per_iter_norms_tokens_embds: false
+    use_LNS: true
+    use_loop_lns: true
 
 lr_scheduler:
   component_key: scheduler
@@ -476,7 +477,7 @@ evaluation_subscriber:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_MATH_PartialMTP_Gating
     mode: ${settings.wandb_mode}
-    experiment_id: woMTP_AlignedHidden${loss_fn.config.hidden_state_alignment_weight}_NormEmbds${model_raw.config.use_per_iter_norms_tokens_embds}_DiscFactor${loss_fn.config.discount_factor}_LA_${model_raw.config.use_latent_autoregressive}_alf${loss_fn.config.align_first_head}_woShift_${model_raw.config.aggregation_type}_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_${settings.experiment_id}
+    experiment_id: DiffAlign_CoolLNS_woMTP_AlignedHidden${loss_fn.config.hidden_state_alignment_weight}_NormEmbds${model_raw.config.use_per_iter_norms_tokens_embds}_DiscFactor${loss_fn.config.discount_factor}_LA_${model_raw.config.use_latent_autoregressive}_alf${loss_fn.config.align_first_head}_woShift_${model_raw.config.aggregation_type}_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_${settings.experiment_id}
     tags: [257M, Partial_MTP, 2Token, GradProj]
     directory: ${settings.wandb_path}
     config_file_path: ${settings.config_file_path}
