@@ -493,8 +493,8 @@ class Trainer:
                 if ce_loss is not None and aux_loss is not None:
                     cumulated_losses_ce[0] += ce_loss.item()
                     cumulated_losses_aux[0] += aux_loss.item() if isinstance(aux_loss, torch.Tensor) else aux_loss
-                    cumulated_losses_aux2[0] += aux_loss2.item() if aux_loss2 is not None else -10.0
-                    cumulated_losses_hidden_state_alignment[0] += hidden_state_alignment_loss.item() if hidden_state_alignment_loss is not None else -10.0
+                    cumulated_losses_aux2[0] += aux_loss2.item() if aux_loss2 is not None else -1.0
+                    cumulated_losses_hidden_state_alignment[0] += hidden_state_alignment_loss.item() if hidden_state_alignment_loss is not None else -1.0
                     cumulated_losses_ce[-1] += 1
                     cumulated_losses_aux[-1] += 1
                     cumulated_losses_aux2[-1] += 1
@@ -537,8 +537,8 @@ class Trainer:
                 
                 aux_loss_value = aux_loss.item() if isinstance(aux_loss, torch.Tensor) else aux_loss
                 cumulated_losses_aux[1] = aux_loss_value if aux_loss is not None else 0.0
-                cumulated_losses_aux2[1] = aux_loss2.item() if aux_loss2 is not None else -10.0
-                cumulated_losses_hidden_state_alignment[1] = hidden_state_alignment_loss.item() if hidden_state_alignment_loss is not None else -10.0
+                cumulated_losses_aux2[1] = aux_loss2.item() if aux_loss2 is not None else -1.0
+                cumulated_losses_hidden_state_alignment[1] = hidden_state_alignment_loss.item() if hidden_state_alignment_loss is not None else -1.0
 
                 reduced_losses = Reducer.reduce(
                     tensor=cumulated_losses,

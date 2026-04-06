@@ -600,6 +600,8 @@ class GPT2ModelFactory:
         use_per_iter_norms: Optional[bool] = False,
         use_per_iter_norms_tokens_embds: Optional[bool] = False,
         use_latent_autoregressive: Optional[bool] = False,
+        use_loop_lns: Optional[bool] = False,
+        iter_gradient_flow_weight: Optional[float] = 1.0,
     ) -> GPT2LLM:
         config = dict(
             sample_key=sample_key,
@@ -643,6 +645,8 @@ class GPT2ModelFactory:
             use_per_iter_norms=use_per_iter_norms,
             use_per_iter_norms_tokens_embds=use_per_iter_norms_tokens_embds,
             use_latent_autoregressive=use_latent_autoregressive,
+            use_loop_lns=use_loop_lns,
+            iter_gradient_flow_weight=iter_gradient_flow_weight,
         )
         if use_meta_device and use_weight_tying:
             raise ValueError(
