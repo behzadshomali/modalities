@@ -828,6 +828,34 @@ class Trainer:
         # Clear gate stats on ALL ranks to prevent memory leaks
         if hasattr(model, "gate_stats"):
             model.gate_stats = {}
+
+        # --- gate std stats (tokens / dims / batches) ---
+        for std_attr, metric_suffix, tag in [
+            ("gate_std_tokens_stats", "std_tokens", "gate_std_tokens_stats"),
+            ("gate_std_dims_stats", "std_dims", "gate_std_dims_stats"),
+            ("gate_std_batches_stats", "std_batches", "gate_std_batches_stats"),
+        ]:
+            if self.global_rank == 0:
+                if hasattr(model, std_attr):
+                    for gate_key, layer_stats in getattr(model, std_attr).items():
+                        metrics_dict = {}
+                        for layer_idx, iter_stats in layer_stats.items():
+                            for iter_idx, vals in iter_stats.items():
+                                if len(vals) > 0:
+                                    avg = sum(vals) / len(vals)
+                                    metrics_dict[f"gate_stats_std/{gate_key}_{metric_suffix}_layer_{layer_idx}_iter_{iter_idx}"] = ResultItem(
+                                        torch.tensor(avg), decimal_places=4
+                                    )
+                        if metrics_dict:
+                            self._publish_evaluation_result(
+                                evaluation_result_publisher=evaluation_result_publisher,
+                                evaluation_result=EvaluationResultBatch(
+                                    losses={}, metrics=metrics_dict, throughput_metrics={},
+                                    dataloader_tag=tag, num_train_steps_done=num_train_steps_done,
+                                ),
+                            )
+            if hasattr(model, std_attr):
+                setattr(model, std_attr, {})
         
         if self.global_rank == 0:
             if hasattr(model, "gate_normalized_stats"):
@@ -856,6 +884,142 @@ class Trainer:
         # Clear gate normalized stats on ALL ranks to prevent memory leaks
         if hasattr(model, "gate_normalized_stats"):
             model.gate_normalized_stats = {}
+
+        # --- gate_normalized std stats (tokens / dims / batches) ---
+        for std_attr, metric_prefix, tag in [
+            ("gate_normalized_std_tokens_stats", "std_tokens", "gate_normalized_std_tokens_stats"),
+            ("gate_normalized_std_dims_stats", "std_dims", "gate_normalized_std_dims_stats"),
+            ("gate_normalized_std_batches_stats", "std_batches", "gate_normalized_std_batches_stats"),
+        ]:
+            if self.global_rank == 0:
+                if hasattr(model, std_attr):
+                    for gate_key, layer_stats in getattr(model, std_attr).items():
+                        metrics_dict = {}
+                        for layer_idx, iter_stats in layer_stats.items():
+                            for iter_idx, vals in iter_stats.items():
+                                if len(vals) > 0:
+                                    avg = sum(vals) / len(vals)
+                                    metrics_dict[f"gate_normalized_stats_std/normalized_{gate_key}_{metric_prefix}_layer_{layer_idx}_iter_{iter_idx}"] = ResultItem(
+                                        torch.tensor(avg), decimal_places=4
+                                    )
+                        if metrics_dict:
+                            self._publish_evaluation_result(
+                                evaluation_result_publisher=evaluation_result_publisher,
+                                evaluation_result=EvaluationResultBatch(
+                                    losses={}, metrics=metrics_dict, throughput_metrics={},
+                                    dataloader_tag=tag, num_train_steps_done=num_train_steps_done,
+                                ),
+                            )
+            if hasattr(model, std_attr):
+                setattr(model, std_attr, {})
+
+        if self.global_rank == 0:
+            if hasattr(model, "gate_bias_stats"):
+                gate_bias_stats = model.gate_bias_stats
+                metrics_dict = {}
+                for iter_idx, layer_stats in gate_bias_stats.items():
+                    for layer_idx, vals in layer_stats.items():
+                        if len(vals) > 0:
+                            avg_val = sum(vals) / len(vals)
+                            metrics_dict[f"gate_bias_stats/iter_{iter_idx}_layer_{layer_idx}"] = ResultItem(
+                                torch.tensor(avg_val), decimal_places=6
+                            )
+                if metrics_dict:
+                    metrics = EvaluationResultBatch(
+                        losses={},
+                        metrics=metrics_dict,
+                        throughput_metrics={},
+                        dataloader_tag="gate_bias_stats",
+                        num_train_steps_done=num_train_steps_done,
+                    )
+                    self._publish_evaluation_result(
+                        evaluation_result_publisher=evaluation_result_publisher,
+                        evaluation_result=metrics,
+                    )
+        # Clear gate bias stats on ALL ranks to prevent memory leaks
+        if hasattr(model, "gate_bias_stats"):
+            model.gate_bias_stats = {}
+
+        if self.global_rank == 0:
+            if hasattr(model, "gate_bias_raw_stats"):
+                gate_bias_raw_stats = model.gate_bias_raw_stats
+                metrics_dict = {}
+                for iter_idx, layer_stats in gate_bias_raw_stats.items():
+                    for layer_idx, vals in layer_stats.items():
+                        if len(vals) > 0:
+                            avg_val = sum(vals) / len(vals)
+                            metrics_dict[f"gate_bias_raw_stats/iter_{iter_idx}_layer_{layer_idx}"] = ResultItem(
+                                torch.tensor(avg_val), decimal_places=6
+                            )
+                if metrics_dict:
+                    metrics = EvaluationResultBatch(
+                        losses={},
+                        metrics=metrics_dict,
+                        throughput_metrics={},
+                        dataloader_tag="gate_bias_raw_stats",
+                        num_train_steps_done=num_train_steps_done,
+                    )
+                    self._publish_evaluation_result(
+                        evaluation_result_publisher=evaluation_result_publisher,
+                        evaluation_result=metrics,
+                    )
+        # Clear gate bias raw stats on ALL ranks to prevent memory leaks
+        if hasattr(model, "gate_bias_raw_stats"):
+            model.gate_bias_raw_stats = {}
+
+        if self.global_rank == 0:
+            if hasattr(model, "gate_value_stats"):
+                gate_value_stats = model.gate_value_stats
+                metrics_dict = {}
+                for iter_idx, layer_stats in gate_value_stats.items():
+                    for layer_idx, vals in layer_stats.items():
+                        if len(vals) > 0:
+                            avg_val = sum(vals) / len(vals)
+                            metrics_dict[f"gate_value_stats/iter_{iter_idx}_layer_{layer_idx}"] = ResultItem(
+                                torch.tensor(avg_val), decimal_places=6
+                            )
+                if metrics_dict:
+                    metrics = EvaluationResultBatch(
+                        losses={},
+                        metrics=metrics_dict,
+                        throughput_metrics={},
+                        dataloader_tag="gate_value_stats",
+                        num_train_steps_done=num_train_steps_done,
+                    )
+                    self._publish_evaluation_result(
+                        evaluation_result_publisher=evaluation_result_publisher,
+                        evaluation_result=metrics,
+                    )
+        # Clear gate value stats on ALL ranks to prevent memory leaks
+        if hasattr(model, "gate_value_stats"):
+            model.gate_value_stats = {}
+
+        # --- gate_value std stats (tokens / dims / batches) ---
+        for std_attr, metric_suffix, tag in [
+            ("gate_value_std_tokens_stats", "std_tokens", "gate_value_std_tokens_stats"),
+            ("gate_value_std_dims_stats", "std_dims", "gate_value_std_dims_stats"),
+            ("gate_value_std_batches_stats", "std_batches", "gate_value_std_batches_stats"),
+        ]:
+            if self.global_rank == 0:
+                if hasattr(model, std_attr):
+                    metrics_dict = {}
+                    for iter_idx, layer_stats in getattr(model, std_attr).items():
+                        for layer_idx, vals in layer_stats.items():
+                            if len(vals) > 0:
+                                avg = sum(vals) / len(vals)
+                                metrics_dict[f"gate_value_stats/{metric_suffix}_iter_{iter_idx}_layer_{layer_idx}"] = ResultItem(
+                                    torch.tensor(avg), decimal_places=6
+                                )
+                    if metrics_dict:
+                        self._publish_evaluation_result(
+                            evaluation_result_publisher=evaluation_result_publisher,
+                            evaluation_result=EvaluationResultBatch(
+                                losses={}, metrics=metrics_dict, throughput_metrics={},
+                                dataloader_tag=tag, num_train_steps_done=num_train_steps_done,
+                            ),
+                        )
+            if hasattr(model, std_attr):
+                setattr(model, std_attr, {})
 
         
 
