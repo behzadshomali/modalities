@@ -952,8 +952,14 @@ class MTPCrossEntropyLossIterHiddenStateAligned(Loss):
         align_first_head: bool = True,
         alignment_type: str = "cosine",  # or "mse",
         hidden_state_alignment_weight: float = 0.1,  # weight for the hidden state alignment loss
+        detach_lm_head_for_mtp: bool = False,  # DEPRECATED: detaching is now handled in the model's forward pass. Kept for config backward compatibility; this flag is ignored.
         tag: str = "MTPCrossEntropyLossIterHiddenStateAligned",
     ):
+        """Note: detach_lm_head_for_mtp is deprecated here. When lm_head/lm_head_norm
+        should be shielded from MTP gradients, set detach_lm_head_for_mtp=True on the
+        *model* (GPT2LLM). The model's forward pass now produces mtp_logits with the
+        correct gradient properties, so the loss function simply uses them directly.
+        """
         super().__init__(tag)
         self.target_key = target_key
         self.prediction_key = prediction_key
@@ -966,6 +972,8 @@ class MTPCrossEntropyLossIterHiddenStateAligned(Loss):
         self.align_first_head = align_first_head
         self.alignment_type = alignment_type
         self.hidden_state_alignment_weight = hidden_state_alignment_weight
+        # detach_lm_head_for_mtp is accepted for backward compat but ignored;
+        # detaching is now done in the model's forward pass.
         self.loss_fun = CrossEntropyLoss(reduction="mean")
 
     def _compute_alignment_loss(
@@ -1004,7 +1012,7 @@ class MTPCrossEntropyLossIterHiddenStateAligned(Loss):
                 weight = alignment_weight_source.weight
                 if hasattr(weight, "full_tensor"):
                     weight = weight.full_tensor()  # gather sharded DTensor to a plain tensor
-                target_embd = F.embedding(target_ids, weight)  # [B, S - shift, D]
+                target_embd = F.embedding(target_ids, weight).to(hidden_trimmed.dtype)  # [B, S - shift, D]
 
 
             if self.alignment_type == "cosine":
@@ -1048,7 +1056,13 @@ class MTPCrossEntropyLossIterHiddenStateAligned(Loss):
             else self.ponder_weight
         )
 
-        # --- 2. Auxiliary + MTP heads ---
+        # --- 2. Build per-iteration logits for auxiliary MTP CE loss ---
+        # The model's forward pass already handles detaching lm_head/lm_head_norm
+        # when detach_lm_head_for_mtp=True on the model. The pre-computed logits
+        # in mtp_logits_list have the correct gradient properties.
+        aux_logits_list = [mtp_logits_list[r] for r in range(1, len(mtp_logits_list))]
+
+        # --- 3. Auxiliary + MTP heads CE loss ---
         # index 1 -> r1 -> x_{t+1} (shift=0)
         # index 2 -> r2 -> x_{t+2} (shift=1)
         # index i -> ri -> x_{t+i} (shift=i-1)
@@ -1061,7 +1075,7 @@ class MTPCrossEntropyLossIterHiddenStateAligned(Loss):
             begin_idx = 2  # Start from index 2, which aligns with t+2 (first head is treated as main head without shift)
         for i, mtp_logits in enumerate(mtp_logits_list[begin_idx:], start=begin_idx-1):
             shift = i  # i=0: r1->t+1, i=1: r2->t+2, ...
-            mtp_logits = mtp_logits.contiguous()
+            mtp_logits = aux_logits_list[i].contiguous()
 
             if shift == 0:
                 slice_logits = mtp_logits
@@ -1080,7 +1094,7 @@ class MTPCrossEntropyLossIterHiddenStateAligned(Loss):
                 if self.align_first_head and shift == 0:
                     ntp_mtp_loss = current_mtp_loss  # discount^0 = 1
 
-        # --- 3. Alignment loss ---
+        # --- 4. Alignment loss ---
         alignment_loss = self._compute_alignment_loss(
             recurrence_outputs, 
             labels, 
@@ -1095,8 +1109,8 @@ class MTPCrossEntropyLossIterHiddenStateAligned(Loss):
 
 
         mtp_only_loss = (mtp_term / current_mtp_lambda * cnt - ntp_mtp_loss) / (cnt - 1) if cnt > 1 else 0.0
-        raw_ponder = ponder_term / current_ponder_weight if current_ponder_weight != 0.0 else ponder_term
-        raw_alignment = alignment_term / self.hidden_state_alignment_weight if self.hidden_state_alignment_weight != 0.0 else alignment_term
+        raw_ponder = ponder_term / current_ponder_weight if current_ponder_weight != 0.0 else ponder_regularization_loss
+        raw_alignment = alignment_term / self.hidden_state_alignment_weight if self.hidden_state_alignment_weight != 0.0 else alignment_loss
         return total_loss, main_loss, mtp_only_loss, raw_ponder, raw_alignment
 
     def _parse_arguments(self, args, kwargs):

@@ -140,6 +140,7 @@ class MTPCrossEntropyLossIterHiddenStateAlignedConfig(CLMCrossEntropyLossConfig)
     align_first_head: bool = True
     hidden_state_alignment_weight: float = 0.1
     alignment_type: str = "cosine"
+    detach_lm_head_for_mtp: bool = False
 
 
 # Checkpointing

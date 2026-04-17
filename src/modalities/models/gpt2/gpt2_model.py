@@ -404,11 +404,18 @@ class GPT2LLMConfig(BaseModel):
     future_masking_prob: float = 0.0
     use_activation_checkpointing: bool = False
     aggregation_type: str = "WS"  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention, ATT_CROSS_EMBD: cross-attention with pre-MTP query
+    use_shared_ws_gate: bool = False  # When True and aggregation_type="WS", uses a single shared gate layer for all iterations instead of separate ones
+    multilayer_ws_gate: bool = False  # When True and aggregation_type="WS", uses a multi-layer feedforward network with non-linearity for the gates instead of a single linear layer
+    use_sigmoid_for_gating: bool = True  # When True and aggregation_type="WS", applies sigmoid to the gate values to constrain them between 0 and 1
+    use_scalar_gate_bias: bool = False  # When True, gate_bias is a scalar per iteration (K,) instead of element-wise (K, n_embd), preventing bias from dominating the gate
+    use_softmax_gating: bool = False  # When True and aggregation_type="WS", uses softmax across iterations instead of sigmoid/softplus + divide-by-sum
     use_per_iter_norms: bool = False  # When True, each recurrence iteration gets its own prev_iter_embd_norm inside GroupRecursiveGPT2MTPBlock
     use_per_iter_norms_tokens_embds: bool = False  # When True, each recurrence iteration gets its own embd_norm for tokens_embds inside GroupRecursiveGPT2MTPBlock    use_latent_autoregressive: bool = False  # When True, step r>0 uses combined_output from step r-1 as input_embd instead of tokens_repres
     use_latent_autoregressive: bool = True  # When True, step r>0 uses combined_output from step r-1 as input_embd instead of tokens_repres
     use_loop_lns: bool = False  # When True, MTP/loop sub-blocks use 1/L scaling (L=max_recurrence) instead of depth-accumulating LNS
     iter_gradient_flow_weight: float = 1.0  # When <1.0, scales the gradient flowing back from iteration r to iteration r-1 in GroupRecursiveGPT2MTPBlock during training, which can help stabilize training when using many recurrences
+    need_mtp_logits: bool = True  # When True, the forward method will return the pre-softmax logits from the combined representation block which can be used for auxiliary losses
+    detach_lm_head_for_mtp: bool = False  # When True and need_mtp_logits is True, lm_head and lm_head_norm parameters are detached so they receive no gradient from the MTP auxiliary loss, while gradients still flow back through the hidden states to the recurrence blocks
 
     @model_validator(mode="after")
     def check_divisibility(self) -> "GPT2LLMConfig":
@@ -919,6 +926,11 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         use_per_iter_norms: bool = False,  # When True, each recurrence iteration gets its own prev_iter_embd_norm
         use_per_iter_norms_tokens_embds: bool = False,  # When True, each recurrence iteration gets its own embd_norm for tokens_embds
         iter_gradient_flow_weight: float = 1.0,  # When <1.0, scales the gradient flowing back from iteration r to iteration r-1 during training
+        use_shared_ws_gate: bool = False,  # When True and aggregation_type="WS", uses a single shared gate layer
+        multilayer_ws_gate: bool = False,  # When True and aggregation_type="WS", uses a multi-layer feedforward network with non-linearity for the gates instead of a single linear layer
+        use_sigmoid_for_gating: bool = True,  # When True and aggregation_type="WS", applies sigmoid to the gate values to constrain them between 0 and 1
+        use_scalar_gate_bias: bool = False,  # When True, gate_bias is a scalar per iteration instead of element-wise
+        use_softmax_gating: bool = False,  # When True and aggregation_type="WS", uses softmax across iterations instead of sigmoid/softplus + divide-by-sum
     ):
         """
         Initializes the GroupRecursiveGPT2MTPBlock.
@@ -976,10 +988,15 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         self.aggregation_type = aggregation_type
         if self.use_combined_representation:
             self.combined_representation_block = CombinedRepresentationGPT2Block(
-                n_embd=n_embd, 
+                n_embd=n_embd,
                 num_representations_max=self.max_recurrence,
                 gates_bias=gates_bias,
-                aggregation_type=aggregation_type
+                aggregation_type=aggregation_type,
+                use_shared_ws_gate=use_shared_ws_gate,
+                use_sigmoid_for_gating=use_sigmoid_for_gating,
+                multilayer_ws_gate=multilayer_ws_gate,
+                use_scalar_gate_bias=use_scalar_gate_bias,
+                use_softmax_gating=use_softmax_gating,
             )
             self.halt_block = HaltGPT2Block(n_embd=n_embd)
             
@@ -1220,6 +1237,11 @@ class CombinedRepresentationGPT2Block(nn.Module):
         gates_bias: Optional[List[float]] = None,
         aggregation_type: str = "WS",  # WS: weighted_sum, ATT: self-attention, ATT_CROSS: cross-attention
         n_heads: int = 8,
+        use_shared_ws_gate: bool = False,
+        multilayer_ws_gate: bool = False,
+        use_sigmoid_for_gating: bool = True,
+        use_scalar_gate_bias: bool = False,
+        use_softmax_gating: bool = False,  # When True, uses softmax across iterations instead of sigmoid/softplus + divide-by-sum
     ):
         super().__init__()
         self.n_embd = n_embd
@@ -1227,28 +1249,84 @@ class CombinedRepresentationGPT2Block(nn.Module):
         self.num_representations = num_representations_max
         self.block_type = BlockTypes.COMBINED_REPRESENTATION
         self.aggregation_type = aggregation_type
+        self.use_shared_ws_gate = use_shared_ws_gate
+        self.use_sigmoid_for_gating = use_sigmoid_for_gating
+        self.multilayer_ws_gate = multilayer_ws_gate
+        self.use_scalar_gate_bias = use_scalar_gate_bias
+        self.use_softmax_gating = use_softmax_gating
         print(f"Using {aggregation_type} for combining representations in CombinedRepresentationGPT2Block")
 
         # --- WS-specific ---
         if aggregation_type == "WS":
-            self.gate_layers = nn.ModuleList([
-                nn.Linear(n_embd, n_embd) for _ in range(num_representations_max)
-            ])
+            if use_shared_ws_gate:
+                # Single shared gate layer for all iterations
+                if multilayer_ws_gate:
+                    self.gate_layer = nn.Sequential(
+                        nn.Linear(n_embd, int(n_embd//2)),
+                        nn.GELU(),
+                        nn.Linear(int(n_embd//2), n_embd),
+                    )
+                else:
+                    self.gate_layer = nn.Linear(n_embd, n_embd)
+            else:
+                # Separate gate layer per iteration
+                if multilayer_ws_gate:
+                    self.gate_layers = nn.ModuleList([
+                        nn.Sequential(
+                            nn.Linear(n_embd, int(n_embd//2)),
+                            nn.GELU(),
+                            nn.Linear(int(n_embd//2), n_embd),
+                        ) for _ in range(num_representations_max)
+                    ])
+                else:
+                    self.gate_layers = nn.ModuleList([
+                        nn.Linear(n_embd, n_embd) for _ in range(num_representations_max)
+                    ])
             if gates_bias is not None:
                 assert len(gates_bias) == num_representations_max, \
                     "Length of gates_bias should be equal to num_representations_max"
-                self.gate_bias = nn.Parameter(
-                    torch.tensor(gates_bias).unsqueeze(1).repeat(1, n_embd)
-                )
+                if use_scalar_gate_bias:
+                    self.gate_bias = nn.Parameter(torch.tensor(gates_bias, dtype=torch.float))
+                else:
+                    self.gate_bias = nn.Parameter(
+                        torch.tensor(gates_bias).unsqueeze(1).repeat(1, n_embd)
+                    )
             else:
-                self.gate_bias = nn.Parameter(torch.zeros(num_representations_max, n_embd))
+                if use_scalar_gate_bias:
+                    self.gate_bias = nn.Parameter(torch.zeros(num_representations_max))
+                else:
+                    self.gate_bias = nn.Parameter(torch.zeros(num_representations_max, n_embd))
 
-        if aggregation_type in ("ATT", "ATT_CROSS", "ATT_CROSS_EMBD"):
-            # --- ATT / ATT_CROSS / ATT_CROSS_EMBD shared ---
+        if aggregation_type in ("ATT", "ATT_CROSS_EMBD"):
+            # --- ATT / ATT_CROSS_EMBD shared ---
             self.attn = nn.MultiheadAttention(
                 embed_dim=n_embd,
                 num_heads=n_heads,
                 batch_first=True,
+            )
+
+        if aggregation_type == "ATT_CROSS":
+            # Cross-attention: r_0 (first recurrence output) serves as the adaptive query.
+            # r_0 has no alignment loss, so it's repurposed to decide the combination.
+            # Explicit Q/K/V projections add compute before attention.
+            self.q_proj = nn.Linear(n_embd, n_embd)
+            self.k_proj = nn.Linear(n_embd, n_embd)
+            self.v_proj = nn.Linear(n_embd, n_embd)
+            self.cross_attn = nn.MultiheadAttention(
+                embed_dim=n_embd,
+                num_heads=n_heads,
+                batch_first=True,
+            )
+            # Per-iteration LayerNorm applied to each ri before it enters as K/V
+            self.kv_norms_cross = nn.ModuleList([
+                nn.LayerNorm(n_embd) for _ in range(num_representations_max)
+            ])
+            # Post-attention FFN: LayerNorm → MLP → residual (adds non-linear capacity)
+            self.post_attn_norm = nn.LayerNorm(n_embd)
+            self.post_attn_mlp = nn.Sequential(
+                nn.Linear(n_embd, n_embd),
+                nn.GELU(),
+                nn.Linear(n_embd, n_embd),
             )
 
         if aggregation_type == "ATT_CROSS_EMBD":
@@ -1260,10 +1338,12 @@ class CombinedRepresentationGPT2Block(nn.Module):
         # --- Shared gate storage (populated by both paths) ---
         self.current_gates = [torch.zeros(n_embd) for _ in range(num_representations_max)]
         self.current_gates_normalized = [torch.zeros(n_embd) for _ in range(num_representations_max)]
+        self.current_gate_values = [torch.zeros(n_embd) for _ in range(num_representations_max)]  # sigmoid(gate_layer(h)) before softplus(bias)
 
     def reset_current_gates(self):
         self.current_gates = [torch.zeros(self.n_embd) for _ in range(self.num_representations)]
         self.current_gates_normalized = [torch.zeros(self.n_embd) for _ in range(self.num_representations)]
+        self.current_gate_values = [torch.zeros(self.n_embd) for _ in range(self.num_representations)]
 
     # ------------------------------------------------------------------
     # Aggregation paths
@@ -1281,8 +1361,44 @@ class CombinedRepresentationGPT2Block(nn.Module):
                 and i < len(pre_computed_combined_representation)
             ):
                 continue
-            gate = torch.sigmoid(self.gate_layers[i](h)) * torch.nn.functional.softplus(self.gate_bias[i])
+            if self.use_sigmoid_for_gating:
+                if self.use_shared_ws_gate:
+                    gate_value = torch.sigmoid(self.gate_layer(h))
+                else:
+                    gate_value = torch.sigmoid(self.gate_layers[i](h))
+                bias_i = self.gate_bias[i] if not self.use_scalar_gate_bias else self.gate_bias[i].reshape(1, 1, 1)
+                gate = gate_value * torch.nn.functional.softplus(bias_i)
+            else:
+                bias_i = self.gate_bias[i] if not self.use_scalar_gate_bias else self.gate_bias[i].reshape(1, 1, 1)
+                if self.use_shared_ws_gate:
+                    gate_value = torch.nn.functional.softplus(self.gate_layer(h) + bias_i)
+                else:
+                    gate_value = torch.nn.functional.softplus(self.gate_layers[i](h) + bias_i)
+                gate = gate_value
+            self.current_gate_values[i] = gate_value
             self.current_gates[i] = gate
+
+        if self.use_softmax_gating:
+            # Compute raw logits (gate_layer output + bias) for each representation,
+            # then apply softmax jointly across iterations. This is cleaner than
+            # sigmoid/softplus + divide-by-sum because weights are determined jointly.
+            gate_logits = []
+            for i, h in enumerate(representations):
+                if self.use_shared_ws_gate:
+                    logit = self.gate_layer(h)
+                else:
+                    logit = self.gate_layers[i](h)
+                bias_i = self.gate_bias[i] if not self.use_scalar_gate_bias else self.gate_bias[i].reshape(1, 1, 1)
+                logit = logit + bias_i
+                gate_logits.append(logit)
+                self.current_gate_values[i] = logit  # store pre-softmax logit
+            gates_stack = torch.stack(gate_logits, dim=0)  # (num_repr, B, S, n_embd)
+            gates_normalized = torch.softmax(gates_stack, dim=0)
+            self.current_gates = [gates_normalized[i] for i in range(len(representations))]
+            self.current_gates_normalized = [gates_normalized[i] for i in range(len(representations))]
+            for i, h in enumerate(representations):
+                combined_h = combined_h + gates_normalized[i] * h
+            return combined_h
 
         gates_stack = torch.stack(
             [self.current_gates[i] for i in range(len(representations))], dim=0
@@ -1318,6 +1434,54 @@ class CombinedRepresentationGPT2Block(nn.Module):
         pe[0::2] = torch.sin(pos * div)           # indices 0, 2, 4, ... (half elements)
         pe[1::2] = torch.cos(pos * div)[:d_model // 2]  # indices 1, 3, 5, ... (floor(d/2) elements)
         return pe
+
+    def _forward_att_cross(self, representations: list) -> torch.Tensor:
+        """Cross-attention with r_0 as the adaptive query + post-attention MLP.
+
+        1. Query = r_0 (first recurrence output). It has no alignment loss,
+           so it's repurposed to decide how to combine all iterations.
+        2. K/V = per-iter-normed representations with sinusoidal iteration PE.
+           Softmax over all representations → weights are jointly determined.
+        3. Post-attention FFN (LayerNorm → MLP) with residual adds non-linear
+           capacity beyond a plain linear combination.
+
+        The cross-attention weights serve as the per-step combination weights
+        (stored in current_gates / current_gates_normalized for logging & KL).
+        """
+        B, S, D = representations[0].shape
+        num_repr = len(representations)
+
+        # --- Query from r_0 (first recurrence output), projected ---
+        query_flat = self.q_proj(representations[0]).view(B * S, 1, D)  # (B*S, 1, D)
+
+        # --- Normalize each representation + sinusoidal iteration PE, then project as K/V ---
+        normed = [
+            self.kv_norms_cross[i](representations[i])
+            + self._sinusoidal_iter_pe(i, D, representations[i].device, representations[i].dtype)
+            for i in range(num_repr)
+        ]
+        normed_stack = torch.stack(normed, dim=2).view(B * S, num_repr, D)  # (B*S, num_repr, D)
+        k_flat = self.k_proj(normed_stack)  # (B*S, num_repr, D)
+        v_flat = self.v_proj(normed_stack)  # (B*S, num_repr, D)
+
+        # --- Cross-attention: r_0 → all representations ---
+        out_flat, attn_weights = self.cross_attn(
+            query_flat, k_flat, v_flat,
+            need_weights=True,
+            average_attn_weights=False,
+        )  # out_flat: (B*S, 1, D), attn_weights: (B*S, n_heads, 1, num_repr)
+
+        combined_h = out_flat[:, 0, :].view(B, S, D)  # (B, S, D)
+
+        # --- Post-attention FFN with residual ---
+        combined_h = combined_h + self.post_attn_mlp(self.post_attn_norm(combined_h))
+
+        # --- Store weights for logging & KL ---
+        weights = attn_weights[:, :, 0, :].mean(dim=1).view(B, S, num_repr)
+        weights_norm = weights / (weights.sum(dim=-1, keepdim=True) + 1e-8)
+
+        self._store_gates(representations, weights, weights_norm, B, S, D, num_repr)
+        return combined_h
 
     def _forward_att_cross_embd(self, representations: list, pre_mtp_embd: torch.Tensor) -> torch.Tensor:
         """Cross-attention: pre-MTP embedding is the query; per-iter-normed representations are K/V.
@@ -1374,11 +1538,13 @@ class CombinedRepresentationGPT2Block(nn.Module):
 
         if self.aggregation_type == "WS":
             return self._forward_ws(representations, pre_computed_combined_representation)
+        elif self.aggregation_type == "ATT_CROSS":
+            return self._forward_att_cross(representations)
         elif self.aggregation_type == "ATT_CROSS_EMBD":
             assert pre_mtp_embd is not None, "pre_mtp_embd must be provided for ATT_CROSS_EMBD"
             return self._forward_att_cross_embd(representations, pre_mtp_embd)
         else:
-            raise ValueError(f"Unknown aggregation_type: {self.aggregation_type!r}. Choose 'WS', 'ATT', 'ATT_CROSS', or 'ATT_CROSS_EMBD'.")
+            raise ValueError(f"Unknown aggregation_type: {self.aggregation_type!r}. Choose 'WS', 'ATT_CROSS', or 'ATT_CROSS_EMBD'.")
     
 class HaltGPT2Block(nn.Module):
     def __init__(
@@ -1554,6 +1720,13 @@ class GPT2LLM(NNModel):
         use_latent_autoregressive: bool = False,  # When True, step r>0 uses combined_output from step r-1 as input_embd
         use_loop_lns: bool = True,  # When True, MTP/loop sub-blocks use 1/L scaling instead of depth-accumulating LNS
         iter_gradient_flow_weight: float = 1.0,  # When <1.0, scales the gradient flow between iterations
+        use_shared_ws_gate: bool = False,  # When True and aggregation_type="WS", uses a single shared gate layer for all iterations
+        multilayer_ws_gate: bool = False,  # When True and aggregation_type="WS", uses a small MLP instead of a single linear layer for the gates
+        use_sigmoid_for_gating: bool = True,  # When True and aggregation_type="WS", applies sigmoid to the gate values to constrain them between 0 and 1
+        use_scalar_gate_bias: bool = False,  # When True, gate_bias is a scalar per iteration instead of element-wise
+        use_softmax_gating: bool = False,  # When True and aggregation_type="WS", uses softmax across iterations instead of sigmoid/softplus + divide-by-sum
+        need_mtp_logits: bool = True,  # When True, the forward method will return the pre-softmax logits from the combined representation block which can be used for auxiliary losses
+        detach_lm_head_for_mtp: bool = False,  # When True, lm_head and lm_head_norm parameters are detached for MTP logits so they are only trained by the main NTP loss; gradients still flow back through hidden states to the recurrence blocks
     ):
         """
         Initializes the GPT2LLM object.
@@ -1587,9 +1760,9 @@ class GPT2LLM(NNModel):
             do_shifted_input (bool): Whether to apply shifted input. Defaults to True.
         """
         weight_decay_groups = {
-            "linear": [".attn", ".mlp", ".lm_head.weight", ".proj", ".gate_layers", ".halt_layer",],
+            "linear": [".attn", ".mlp", ".lm_head.weight", ".proj", ".gate_layer", ".halt_layer",],
             "embedding": [".wte", ".wpe", ".recurrence_embd", ".latent_thoughts", ".gate_bias",],
-            "layernorm": [".attention_norm", ".ffn_norm", ".lm_head_norm", ".prev_iter_embd_norm", ".embd_norm", ".kv_norms"],
+            "layernorm": [".attention_norm", ".ffn_norm", ".lm_head_norm", ".prev_iter_embd_norm", ".embd_norm", ".kv_norms", ".kv_norms_cross", ".post_attn_norm"],
         }
         super().__init__(weight_decay_groups=weight_decay_groups, seed=seed)
         self.sample_key = sample_key
@@ -1621,6 +1794,8 @@ class GPT2LLM(NNModel):
         self.use_per_iter_norms_tokens_embds = use_per_iter_norms_tokens_embds
         self.use_loop_lns = use_loop_lns
         self.iter_gradient_flow_weight = iter_gradient_flow_weight
+        self.need_mtp_logits = need_mtp_logits
+        self.detach_lm_head_for_mtp = detach_lm_head_for_mtp
 
         if return_each_recurrence_logits_entropy:
             self.recurrence_logits_entropy_stats = {}
@@ -1646,6 +1821,19 @@ class GPT2LLM(NNModel):
             self.halt_value_stats = {}
             self.gate_stats = {f"gate_{i}": {} for i in range(max(self.max_recurrences))}
             self.gate_normalized_stats = {f"normalized_gate_{i}": {} for i in range(max(self.max_recurrences))}
+            self.gate_bias_stats = {}      # softplus(gate_bias) per iter/layer
+            self.gate_bias_raw_stats = {}  # raw gate_bias per iter/layer
+            self.gate_value_stats = {}     # sigmoid(gate_layer(h)) per iter/layer
+            # per-dim std dicts: tokens=std over seq_len, dims=std over n_embd, batches=std over batch
+            self.gate_std_tokens_stats = {f"gate_{i}": {} for i in range(max(self.max_recurrences))}
+            self.gate_std_dims_stats = {f"gate_{i}": {} for i in range(max(self.max_recurrences))}
+            self.gate_std_batches_stats = {f"gate_{i}": {} for i in range(max(self.max_recurrences))}
+            self.gate_normalized_std_tokens_stats = {f"normalized_gate_{i}": {} for i in range(max(self.max_recurrences))}
+            self.gate_normalized_std_dims_stats = {f"normalized_gate_{i}": {} for i in range(max(self.max_recurrences))}
+            self.gate_normalized_std_batches_stats = {f"normalized_gate_{i}": {} for i in range(max(self.max_recurrences))}
+            self.gate_value_std_tokens_stats = {}
+            self.gate_value_std_dims_stats = {}
+            self.gate_value_std_batches_stats = {}
 
         # TODO: dependency injection
         if poe_type is PositionTypes.ABSOLUTE:
@@ -1748,6 +1936,11 @@ class GPT2LLM(NNModel):
                         use_per_iter_norms=use_per_iter_norms,
                         use_per_iter_norms_tokens_embds=use_per_iter_norms_tokens_embds,
                         iter_gradient_flow_weight=iter_gradient_flow_weight,
+                        use_shared_ws_gate=use_shared_ws_gate,
+                        use_sigmoid_for_gating=use_sigmoid_for_gating,
+                        multilayer_ws_gate=multilayer_ws_gate,
+                        use_scalar_gate_bias=use_scalar_gate_bias,
+                        use_softmax_gating=use_softmax_gating,
                         **block_arguments
                     )
             elif block_type in [BlockTypes.COMBINED_REPRESENTATION, BlockTypes.HALT]:
@@ -1821,7 +2014,7 @@ class GPT2LLM(NNModel):
         
         for group in self.recurrent_blocks_indices:
             if isinstance(group, list): 
-                if layer_index == group[0]:
+                if layer_index == group[0] and group[-1] > 0: # for cases where [[-0,-1,...]]
                     return BlockTypes.GROUP_RECURSIVE
                 if -layer_index == group[0]:
                     return BlockTypes.GROUP_RECURSIVE_MTP
@@ -1905,6 +2098,35 @@ class GPT2LLM(NNModel):
             self.halt_value_stats[int(iter_idx)].append(halt_signal)
 
     @staticmethod
+    def _apply_module_with_detached_params(module, x):
+        """Forward *x* through *module* with all learnable parameters detached.
+
+        Gradients still flow through *x* (so the recurrence blocks can be
+        trained), but the module's own parameters receive no gradient from
+        this path.
+        """
+        if isinstance(module, nn.LayerNorm):
+            w = module.weight.detach() if module.weight is not None else None
+            b = module.bias.detach() if module.bias is not None else None
+            return torch.nn.functional.layer_norm(x, module.normalized_shape, w, b, module.eps)
+        elif isinstance(module, nn.RMSNorm):
+            w = module.weight.detach()
+            normed = x.float() * torch.rsqrt(x.float().pow(2).mean(-1, keepdim=True) + module.eps)
+            return (normed * w.float()).to(x.dtype)
+        elif isinstance(module, RMSLayerNorm):
+            normed = (x.float() * torch.rsqrt(x.float().pow(2).mean(-1, keepdim=True) + module.epsilon)).type_as(x)
+            normed = normed * module.weight.detach()
+            if module.bias is not None:
+                normed = normed + module.bias.detach()
+            return normed
+        elif isinstance(module, nn.Linear):
+            w = module.weight.detach()
+            b = module.bias.detach() if module.bias is not None else None
+            return torch.nn.functional.linear(x, w, b)
+        else:
+            raise TypeError(f"Unsupported module type for detached forward: {type(module)}")
+
+    @staticmethod
     def _get_gate_mean_for_logging(gate_value: Any) -> torch.Tensor:
         """Return a scalar tensor mean for a gate value used in logging."""
         if gate_value is None:
@@ -1912,6 +2134,27 @@ class GPT2LLM(NNModel):
         if isinstance(gate_value, torch.Tensor):
             return gate_value.float().mean()
         return torch.tensor(float(gate_value))
+
+    @staticmethod
+    def _get_gate_std_tokens_for_logging(gate_value: Any) -> torch.Tensor:
+        """Std across the token/sequence dimension (dim=1 of (B,S,D)), averaged over B and D."""
+        if not isinstance(gate_value, torch.Tensor) or gate_value.ndim < 2:
+            return torch.tensor(0.0)
+        return gate_value.float().std(dim=1).mean()
+
+    @staticmethod
+    def _get_gate_std_dims_for_logging(gate_value: Any) -> torch.Tensor:
+        """Std across the embedding dimension (dim=2 of (B,S,D)), averaged over B and S."""
+        if not isinstance(gate_value, torch.Tensor) or gate_value.ndim < 1:
+            return torch.tensor(0.0)
+        return gate_value.float().std(dim=-1).mean()
+
+    @staticmethod
+    def _get_gate_std_batches_for_logging(gate_value: Any) -> torch.Tensor:
+        """Std across the batch dimension (dim=0 of (B,S,D)), averaged over S and D."""
+        if not isinstance(gate_value, torch.Tensor) or gate_value.ndim < 3:
+            return torch.tensor(0.0)
+        return gate_value.float().std(dim=0).mean()
 
     def _normalize_gate_values_for_logging(
         self,
@@ -1942,46 +2185,122 @@ class GPT2LLM(NNModel):
             return
         
         for iter_idx in range(max_iters):
-            gate_val = 0.0
+            raw_value = None
             if isinstance(gate_values_dict, dict) and iter_idx in gate_values_dict:
-                gate_val = self._get_gate_mean_for_logging(gate_values_dict[iter_idx]).item()
+                raw_value = gate_values_dict[iter_idx]
             elif isinstance(gate_values_dict, list) and iter_idx < len(gate_values_dict):
-                gate_val = self._get_gate_mean_for_logging(gate_values_dict[iter_idx]).item()
+                raw_value = gate_values_dict[iter_idx]
+            gate_val = self._get_gate_mean_for_logging(raw_value).item()
+            std_tokens = self._get_gate_std_tokens_for_logging(raw_value).item()
+            std_dims = self._get_gate_std_dims_for_logging(raw_value).item()
+            std_batches = self._get_gate_std_batches_for_logging(raw_value).item()
             
             gate_key = f"gate_{iter_idx}"
-            if gate_key not in self.gate_stats:
-                 self.gate_stats[gate_key] = {}
-            
-            if int(layer_idx) not in self.gate_stats[gate_key]:
-                self.gate_stats[gate_key][int(layer_idx)] = {}
+            li = int(layer_idx)
+            ii = int(iter_idx)
+            for d in [self.gate_stats, self.gate_std_tokens_stats, self.gate_std_dims_stats, self.gate_std_batches_stats]:
+                d.setdefault(gate_key, {}).setdefault(li, {}).setdefault(ii, [])
 
-            if int(iter_idx) not in self.gate_stats[gate_key][int(layer_idx)]:
-                self.gate_stats[gate_key][int(layer_idx)][int(iter_idx)] = []
-
-            self.gate_stats[gate_key][int(layer_idx)][int(iter_idx)].append(gate_val)
+            self.gate_stats[gate_key][li][ii].append(gate_val)
+            self.gate_std_tokens_stats[gate_key][li][ii].append(std_tokens)
+            self.gate_std_dims_stats[gate_key][li][ii].append(std_dims)
+            self.gate_std_batches_stats[gate_key][li][ii].append(std_batches)
     
     def record_gate_normalized_stats(self, gate_values_normalized_dict, layer_idx, max_iters):
         if not self.training:
             return
         
         for iter_idx in range(max_iters):
-            gate_val = 0.0
+            raw_value = None
             if isinstance(gate_values_normalized_dict, dict) and iter_idx in gate_values_normalized_dict:
-                gate_val = self._get_gate_mean_for_logging(gate_values_normalized_dict[iter_idx]).item()
+                raw_value = gate_values_normalized_dict[iter_idx]
             elif isinstance(gate_values_normalized_dict, list) and iter_idx < len(gate_values_normalized_dict):
-                gate_val = self._get_gate_mean_for_logging(gate_values_normalized_dict[iter_idx]).item()
+                raw_value = gate_values_normalized_dict[iter_idx]
+            gate_val = self._get_gate_mean_for_logging(raw_value).item()
+            std_tokens = self._get_gate_std_tokens_for_logging(raw_value).item()
+            std_dims = self._get_gate_std_dims_for_logging(raw_value).item()
+            std_batches = self._get_gate_std_batches_for_logging(raw_value).item()
             
             gate_key = f"gate_{iter_idx}_normalized"
-            if gate_key not in self.gate_normalized_stats:
-                 self.gate_normalized_stats[gate_key] = {}
+            li = int(layer_idx)
+            ii = int(iter_idx)
+            for d in [self.gate_normalized_stats,
+                      self.gate_normalized_std_tokens_stats,
+                      self.gate_normalized_std_dims_stats,
+                      self.gate_normalized_std_batches_stats]:
+                d.setdefault(gate_key, {}).setdefault(li, {}).setdefault(ii, [])
             
-            if int(layer_idx) not in self.gate_normalized_stats[gate_key]:
-                self.gate_normalized_stats[gate_key][int(layer_idx)] = {}
-            
-            if int(iter_idx) not in self.gate_normalized_stats[gate_key][int(layer_idx)]:
-                self.gate_normalized_stats[gate_key][int(layer_idx)][int(iter_idx)] = []
-            
-            self.gate_normalized_stats[gate_key][int(layer_idx)][int(iter_idx)].append(gate_val)    
+            self.gate_normalized_stats[gate_key][li][ii].append(gate_val)
+            self.gate_normalized_std_tokens_stats[gate_key][li][ii].append(std_tokens)
+            self.gate_normalized_std_dims_stats[gate_key][li][ii].append(std_dims)
+            self.gate_normalized_std_batches_stats[gate_key][li][ii].append(std_batches)
+
+    def record_gate_bias_stats(self, combined_block, layer_idx: int) -> None:
+        """Record per-iteration gate_bias statistics for WS aggregation.
+
+        - use_sigmoid_for_gating=True:  bias enters as softplus(gate_bias[i]) multiplicatively.
+          Both softplus(bias) (gate_bias_stats) and raw bias (gate_bias_raw_stats) are tracked.
+        - use_sigmoid_for_gating=False: bias enters additively as linear(h) + gate_bias[i].
+          Only raw bias (gate_bias_raw_stats) is tracked; softplus is not applicable.
+        """
+        if not self.training:
+            return
+        if combined_block.aggregation_type != "WS":
+            return
+        if not hasattr(combined_block, "gate_bias"):
+            return
+
+        # gate_bias: (num_representations_max, n_embd)
+        with torch.no_grad():
+            raw_bias = combined_block.gate_bias.detach().float()  # (K, D)
+
+        for iter_idx in range(raw_bias.size(0)):
+            raw_val = raw_bias[iter_idx].mean().item()
+            if int(iter_idx) not in self.gate_bias_raw_stats:
+                self.gate_bias_raw_stats[int(iter_idx)] = {}
+            if int(layer_idx) not in self.gate_bias_raw_stats[int(iter_idx)]:
+                self.gate_bias_raw_stats[int(iter_idx)][int(layer_idx)] = []
+            self.gate_bias_raw_stats[int(iter_idx)][int(layer_idx)].append(raw_val)
+
+            # softplus(bias) is only meaningful when the bias is used multiplicatively
+            if combined_block.use_sigmoid_for_gating:
+                sp_val = torch.nn.functional.softplus(raw_bias[iter_idx]).mean().item()
+                if int(iter_idx) not in self.gate_bias_stats:
+                    self.gate_bias_stats[int(iter_idx)] = {}
+                if int(layer_idx) not in self.gate_bias_stats[int(iter_idx)]:
+                    self.gate_bias_stats[int(iter_idx)][int(layer_idx)] = []
+                self.gate_bias_stats[int(iter_idx)][int(layer_idx)].append(sp_val)
+
+    def record_gate_value_stats(self, gate_values, layer_idx: int, max_iters: int) -> None:
+        """Record the per-iteration mean and per-dimension std of gate values before the final activation.
+
+        - use_sigmoid_for_gating=True:  stores sigmoid(linear(h)), range (0, 1).
+        - use_sigmoid_for_gating=False: stores linear(h) + gate_bias[i] (pre-relu).
+        Three std variants are tracked: across tokens (seq_len), across dims (n_embd), across batches.
+        """
+        if not self.training:
+            return
+        for iter_idx in range(max_iters):
+            value = None
+            if isinstance(gate_values, list) and iter_idx < len(gate_values):
+                value = gate_values[iter_idx]
+            elif isinstance(gate_values, dict) and iter_idx in gate_values:
+                value = gate_values[iter_idx]
+            val = self._get_gate_mean_for_logging(value).item()
+            std_tokens = self._get_gate_std_tokens_for_logging(value).item()
+            std_dims = self._get_gate_std_dims_for_logging(value).item()
+            std_batches = self._get_gate_std_batches_for_logging(value).item()
+            ii = int(iter_idx)
+            li = int(layer_idx)
+            for d in [self.gate_value_stats,
+                      self.gate_value_std_tokens_stats,
+                      self.gate_value_std_dims_stats,
+                      self.gate_value_std_batches_stats]:
+                d.setdefault(ii, {}).setdefault(li, [])
+            self.gate_value_stats[ii][li].append(val)
+            self.gate_value_std_tokens_stats[ii][li].append(std_tokens)
+            self.gate_value_std_dims_stats[ii][li].append(std_dims)
+            self.gate_value_std_batches_stats[ii][li].append(std_batches)    
             
     
     @overload
@@ -2087,13 +2406,9 @@ class GPT2LLM(NNModel):
                         self.processed_layers_in_this_run += block.num_blocks
 
                     self.record_gate_stats(block.combined_representation_block.current_gates, layer_idx, block.max_recurrence)
-                    
-                    # For logging, normalize scalar gate means across iterations so trends remain comparable.
-                    normalized_gates_for_logging = self._normalize_gate_values_for_logging(
-                        block.combined_representation_block.current_gates,
-                        block.max_recurrence,
-                    )
-                    self.record_gate_normalized_stats(normalized_gates_for_logging, layer_idx, block.max_recurrence)
+                    self.record_gate_normalized_stats(block.combined_representation_block.current_gates_normalized, layer_idx, block.max_recurrence)
+                    self.record_gate_bias_stats(block.combined_representation_block, int(layer_idx))
+                    self.record_gate_value_stats(block.combined_representation_block.current_gate_values, int(layer_idx), block.max_recurrence)
 
                     self.record_halt_signal_stats(p_n_list)
                     # Detach gate references to avoid pinning autograd graph in memory
@@ -2152,6 +2467,7 @@ class GPT2LLM(NNModel):
         if self.return_each_recurrence_output:
             final_output["each_recurrence_hidden_states"] = each_recurrence_outputs  # pre-lm_head, [K, B, S, D]
             final_output["each_recurrence_logits"] = []
+            final_output["each_recurrence_normed_hidden_states"] = []
             if self.return_each_recurrence_logits_entropy:
                 final_output["each_recurrence_entropy"] = []
 
@@ -2163,19 +2479,48 @@ class GPT2LLM(NNModel):
                 if self.training:
                     self.record_recurrence_logits_entropy_stats(self.max_recurrences[-1]-1, entropy)
 
-            for r in range(len(each_recurrence_outputs)):
-                if self.separate_lm_head_norm:
-                    o = self.transformer.lm_head_norm[r](each_recurrence_outputs[r])
-                else:
-                    o = self.transformer.lm_head_norm(each_recurrence_outputs[r]) if hasattr(self.transformer, "lm_head_norm") else each_recurrence_outputs[r]
-                o = self.transformer.lm_head(o) if hasattr(self.transformer, "lm_head") else o
-                final_output["each_recurrence_logits"].append(o)
+            if self.need_mtp_logits:
+                for r in range(len(each_recurrence_outputs)):
+                    if self.detach_lm_head_for_mtp:
+                        # Apply norm and lm_head with detached parameters:
+                        # their weights receive no MTP gradient, but gradients
+                        # still flow through the hidden-state inputs back to
+                        # the recurrence blocks.
+                        if self.separate_lm_head_norm:
+                            normed = self._apply_module_with_detached_params(
+                                self.transformer.lm_head_norm[r], each_recurrence_outputs[r]
+                            )
+                        elif hasattr(self.transformer, "lm_head_norm"):
+                            normed = self._apply_module_with_detached_params(
+                                self.transformer.lm_head_norm, each_recurrence_outputs[r]
+                            )
+                        else:
+                            normed = each_recurrence_outputs[r]
 
-                if self.return_each_recurrence_logits_entropy:
-                    entropy = get_logits_entropy(o)
-                    final_output["each_recurrence_entropy"].append(entropy)
-                    if self.training:
-                        self.record_recurrence_logits_entropy_stats(r, entropy.detach())
+                        if hasattr(self.transformer, "lm_head"):
+                            o = self._apply_module_with_detached_params(
+                                self.transformer.lm_head, normed
+                            )
+                        else:
+                            o = normed
+                    else:
+                        if self.separate_lm_head_norm:
+                            normed = self.transformer.lm_head_norm[r](each_recurrence_outputs[r])
+                        else:
+                            normed = self.transformer.lm_head_norm(each_recurrence_outputs[r]) if hasattr(self.transformer, "lm_head_norm") else each_recurrence_outputs[r]
+                        o = self.transformer.lm_head(normed) if hasattr(self.transformer, "lm_head") else normed
+                    
+                    final_output["each_recurrence_logits"].append(o)
+                    final_output["each_recurrence_normed_hidden_states"].append(normed)
+
+                    if self.return_each_recurrence_logits_entropy:
+                        entropy = get_logits_entropy(o)
+                        final_output["each_recurrence_entropy"].append(entropy)
+                        if self.training:
+                            self.record_recurrence_logits_entropy_stats(r, entropy.detach())
+
+            else:
+                final_output["each_recurrence_logits"] += [torch.ones_like(h)*(-1000)] * (len(each_recurrence_outputs))  # fill the rest of the list with None if not returning MTP logits
 
             final_output["each_recurrence_logits"] = torch.stack(final_output["each_recurrence_logits"])
             if self.return_each_recurrence_logits_entropy:
