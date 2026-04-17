@@ -602,6 +602,13 @@ class GPT2ModelFactory:
         use_latent_autoregressive: Optional[bool] = False,
         use_loop_lns: Optional[bool] = False,
         iter_gradient_flow_weight: Optional[float] = 1.0,
+        use_shared_ws_gate: Optional[bool] = False,
+        multilayer_ws_gate: Optional[bool] = False,
+        use_sigmoid_for_gating: Optional[bool] = True,
+        use_scalar_gate_bias: Optional[bool] = False,
+        use_softmax_gating: Optional[bool] = False,
+        need_mtp_logits: Optional[bool] = True,
+        detach_lm_head_for_mtp: Optional[bool] = False,
     ) -> GPT2LLM:
         config = dict(
             sample_key=sample_key,
@@ -647,6 +654,13 @@ class GPT2ModelFactory:
             use_latent_autoregressive=use_latent_autoregressive,
             use_loop_lns=use_loop_lns,
             iter_gradient_flow_weight=iter_gradient_flow_weight,
+            use_shared_ws_gate=use_shared_ws_gate,
+            multilayer_ws_gate=multilayer_ws_gate,
+            use_sigmoid_for_gating=use_sigmoid_for_gating,
+            use_scalar_gate_bias=use_scalar_gate_bias,
+            use_softmax_gating=use_softmax_gating,
+            need_mtp_logits=need_mtp_logits,
+            detach_lm_head_for_mtp=detach_lm_head_for_mtp,
         )
         if use_meta_device and use_weight_tying:
             raise ValueError(
