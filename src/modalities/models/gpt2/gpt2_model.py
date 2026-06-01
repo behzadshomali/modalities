@@ -409,6 +409,7 @@ class GPT2LLMConfig(BaseModel):
     use_sigmoid_for_gating: bool = True  # When True and aggregation_type="WS", applies sigmoid to the gate values to constrain them between 0 and 1
     use_scalar_gate_bias: bool = False  # When True, gate_bias is a scalar per iteration (K,) instead of element-wise (K, n_embd), preventing bias from dominating the gate
     use_softmax_gating: bool = False  # When True and aggregation_type="WS", uses softmax across iterations instead of sigmoid/softplus + divide-by-sum
+    ws_gate_ablation_mode: Optional[str] = None  # None (default, learned gates), "uniform" (1/N per iter), "last_only" (last=1.0, rest=0.0), "last_only_learned" (last=learned gate applied directly to h_last, rest=0). Only affects aggregation_type="WS".
     use_per_iter_norms: bool = False  # When True, each recurrence iteration gets its own prev_iter_embd_norm inside GroupRecursiveGPT2MTPBlock
     use_per_iter_norms_tokens_embds: bool = False  # When True, each recurrence iteration gets its own embd_norm for tokens_embds inside GroupRecursiveGPT2MTPBlock    use_latent_autoregressive: bool = False  # When True, step r>0 uses combined_output from step r-1 as input_embd instead of tokens_repres
     use_latent_autoregressive: bool = True  # When True, step r>0 uses combined_output from step r-1 as input_embd instead of tokens_repres
@@ -931,6 +932,7 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
         use_sigmoid_for_gating: bool = True,  # When True and aggregation_type="WS", applies sigmoid to the gate values to constrain them between 0 and 1
         use_scalar_gate_bias: bool = False,  # When True, gate_bias is a scalar per iteration instead of element-wise
         use_softmax_gating: bool = False,  # When True and aggregation_type="WS", uses softmax across iterations instead of sigmoid/softplus + divide-by-sum
+        ws_gate_ablation_mode: Optional[str] = None,  # None (learned), "uniform" or "last_only"; only used when aggregation_type="WS"
     ):
         """
         Initializes the GroupRecursiveGPT2MTPBlock.
@@ -997,9 +999,10 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
                 multilayer_ws_gate=multilayer_ws_gate,
                 use_scalar_gate_bias=use_scalar_gate_bias,
                 use_softmax_gating=use_softmax_gating,
+                ws_gate_ablation_mode=ws_gate_ablation_mode,
             )
             self.halt_block = HaltGPT2Block(n_embd=n_embd)
-            
+
         # we will have at most "max_recurrence" latent thoughts which we want to learn
         self.latent_thoughts = nn.Parameter(torch.randn(max_recurrence-1, n_embd))
         self.do_shifted_input = do_shifted_input
@@ -1242,6 +1245,7 @@ class CombinedRepresentationGPT2Block(nn.Module):
         use_sigmoid_for_gating: bool = True,
         use_scalar_gate_bias: bool = False,
         use_softmax_gating: bool = False,  # When True, uses softmax across iterations instead of sigmoid/softplus + divide-by-sum
+        ws_gate_ablation_mode: Optional[str] = None,  # None (learned), "uniform", or "last_only"; only used when aggregation_type="WS"
     ):
         super().__init__()
         self.n_embd = n_embd
@@ -1254,6 +1258,11 @@ class CombinedRepresentationGPT2Block(nn.Module):
         self.multilayer_ws_gate = multilayer_ws_gate
         self.use_scalar_gate_bias = use_scalar_gate_bias
         self.use_softmax_gating = use_softmax_gating
+        if ws_gate_ablation_mode not in (None, "uniform", "last_only", "last_only_learned"):
+            raise ValueError(
+                f"ws_gate_ablation_mode must be one of None, 'uniform', 'last_only', 'last_only_learned'; got {ws_gate_ablation_mode!r}"
+            )
+        self.ws_gate_ablation_mode = ws_gate_ablation_mode
         print(f"Using {aggregation_type} for combining representations in CombinedRepresentationGPT2Block")
 
         # --- WS-specific ---
@@ -1354,6 +1363,58 @@ class CombinedRepresentationGPT2Block(nn.Module):
         pre_computed_combined_representation: Optional[torch.Tensor],
     ) -> torch.Tensor:
         combined_h = torch.zeros_like(representations[0])
+
+        if self.ws_gate_ablation_mode is not None:
+            num_repr = len(representations)
+            if self.ws_gate_ablation_mode == "last_only_learned":
+                # All but the last iteration contribute 0; last uses the learned gate
+                # applied directly (no cross-iteration normalization since others are 0).
+                h_last = representations[-1]
+                if self.use_sigmoid_for_gating:
+                    if self.use_shared_ws_gate:
+                        gate_value = torch.sigmoid(self.gate_layer(h_last))
+                    else:
+                        gate_value = torch.sigmoid(self.gate_layers[-1](h_last))
+                    bias_last = (
+                        self.gate_bias[-1]
+                        if not self.use_scalar_gate_bias
+                        else self.gate_bias[-1].reshape(1, 1, 1)
+                    )
+                    gate_last = gate_value * torch.nn.functional.softplus(bias_last)
+                else:
+                    bias_last = (
+                        self.gate_bias[-1]
+                        if not self.use_scalar_gate_bias
+                        else self.gate_bias[-1].reshape(1, 1, 1)
+                    )
+                    if self.use_shared_ws_gate:
+                        gate_value = torch.nn.functional.softplus(self.gate_layer(h_last) + bias_last)
+                    else:
+                        gate_value = torch.nn.functional.softplus(self.gate_layers[-1](h_last) + bias_last)
+                    gate_last = gate_value
+                zero = torch.zeros_like(h_last)
+                for i in range(num_repr - 1):
+                    self.current_gate_values[i] = zero
+                    self.current_gates[i] = zero
+                    self.current_gates_normalized[i] = zero
+                self.current_gate_values[-1] = gate_value
+                self.current_gates[-1] = gate_last
+                self.current_gates_normalized[-1] = gate_last
+                return gate_last * h_last
+
+            if self.ws_gate_ablation_mode == "uniform":
+                weights = [1.0 / num_repr] * num_repr
+            else:  # "last_only"
+                weights = [0.0] * num_repr
+                weights[-1] = 1.0
+            for i, h in enumerate(representations):
+                gate_const = torch.full_like(h, weights[i])
+                self.current_gate_values[i] = gate_const
+                self.current_gates[i] = gate_const
+                self.current_gates_normalized[i] = gate_const
+                if weights[i] != 0.0:
+                    combined_h = combined_h + weights[i] * h
+            return combined_h
 
         for i, h in enumerate(representations):
             if (
@@ -1727,6 +1788,7 @@ class GPT2LLM(NNModel):
         use_softmax_gating: bool = False,  # When True and aggregation_type="WS", uses softmax across iterations instead of sigmoid/softplus + divide-by-sum
         need_mtp_logits: bool = True,  # When True, the forward method will return the pre-softmax logits from the combined representation block which can be used for auxiliary losses
         detach_lm_head_for_mtp: bool = False,  # When True, lm_head and lm_head_norm parameters are detached for MTP logits so they are only trained by the main NTP loss; gradients still flow back through hidden states to the recurrence blocks
+        ws_gate_ablation_mode: Optional[str] = None,  # None (learned), "uniform", or "last_only"; only used when aggregation_type="WS"
     ):
         """
         Initializes the GPT2LLM object.
@@ -1796,6 +1858,7 @@ class GPT2LLM(NNModel):
         self.iter_gradient_flow_weight = iter_gradient_flow_weight
         self.need_mtp_logits = need_mtp_logits
         self.detach_lm_head_for_mtp = detach_lm_head_for_mtp
+        self.ws_gate_ablation_mode = ws_gate_ablation_mode
 
         if return_each_recurrence_logits_entropy:
             self.recurrence_logits_entropy_stats = {}
@@ -1941,6 +2004,7 @@ class GPT2LLM(NNModel):
                         multilayer_ws_gate=multilayer_ws_gate,
                         use_scalar_gate_bias=use_scalar_gate_bias,
                         use_softmax_gating=use_softmax_gating,
+                        ws_gate_ablation_mode=ws_gate_ablation_mode,
                         **block_arguments
                     )
             elif block_type in [BlockTypes.COMBINED_REPRESENTATION, BlockTypes.HALT]:
