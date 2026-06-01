@@ -1213,8 +1213,28 @@ class GroupRecursiveGPT2MTPBlock(nn.Module):
             output["recurrence_outputs"] = all_recurrence_outputs
         
         if self.track_recurrence_embd_similarity:
-            output["cosine_similarity"] = torch.stack(cosine_similarities).mean()
-            output["mse_similarity"] = torch.stack(mse_similarities).mean()
+            # per-step similarities (x_before vs x_after at each recurrence step)
+            output["cosine_similarity"] = torch.stack(cosine_similarities)  # [K]
+            output["mse_similarity"] = torch.stack(mse_similarities)  # [K]
+
+            # similarity of the combined representation vs each per-step output
+            if combined_output is not None:
+                cosine_similarities_vs_combined = []
+                mse_similarities_vs_combined = []
+                for step_output in all_recurrence_outputs:
+                    cos_vs_combined = (
+                        nn.CosineSimilarity(dim=-1)(
+                            combined_output.view(combined_output.size(0), -1),
+                            step_output.view(step_output.size(0), -1),
+                        )
+                        + 1.0
+                    ) / 2.0  # shift to [0, 1]
+                    cosine_similarities_vs_combined.append(cos_vs_combined.mean())
+                    mse_similarities_vs_combined.append(
+                        nn.functional.mse_loss(combined_output, step_output, reduction="mean")
+                    )
+                output["cosine_similarity_vs_combined"] = torch.stack(cosine_similarities_vs_combined)  # [K]
+                output["mse_similarity_vs_combined"] = torch.stack(mse_similarities_vs_combined)  # [K]
 
         if self.use_combined_representation:
             output["combined_output"] = combined_output.to(type_)
@@ -1663,9 +1683,10 @@ class GroupRecursiveGPT2Block(nn.Module):
             output["recurrence_outputs"] = all_recurrence_outputs
         
         if self.track_recurrence_embd_similarity:
-            output["cosine_similarity"] = torch.stack(cosine_similarities).mean()
-            output["mse_similarity"] = torch.stack(mse_similarities).mean()
-            
+            # per-step similarities (x_before vs x_after at each recurrence step)
+            output["cosine_similarity"] = torch.stack(cosine_similarities)  # [K]
+            output["mse_similarity"] = torch.stack(mse_similarities)  # [K]
+
 
         output["output"] = x.to(type_)
 
@@ -2070,14 +2091,15 @@ class GPT2LLM(NNModel):
             self.recurrence_usage_stats[int(layer_idx)] = []
         self.recurrence_usage_stats[int(layer_idx)].append(block.current_recurrence)
 
-    def record_recurrence_embedding_similarity_stats(self, cosine_similarity, mse_similarity, layer_idx):
-        if int(layer_idx) not in self.recurrence_embedding_cosine_similarity_stats:
-            self.recurrence_embedding_cosine_similarity_stats[int(layer_idx)] = []
-        self.recurrence_embedding_cosine_similarity_stats[int(layer_idx)].append(cosine_similarity.item())
+    def record_recurrence_embedding_similarity_stats(self, cosine_similarity, mse_similarity, layer_idx, suffix=""):
+        key = f"{int(layer_idx)}{suffix}"
+        if key not in self.recurrence_embedding_cosine_similarity_stats:
+            self.recurrence_embedding_cosine_similarity_stats[key] = []
+        self.recurrence_embedding_cosine_similarity_stats[key].append(cosine_similarity.item())
 
-        if int(layer_idx) not in self.recurrence_embedding_mse_similarity_stats:
-            self.recurrence_embedding_mse_similarity_stats[int(layer_idx)] = []
-        self.recurrence_embedding_mse_similarity_stats[int(layer_idx)].append(mse_similarity.item())
+        if key not in self.recurrence_embedding_mse_similarity_stats:
+            self.recurrence_embedding_mse_similarity_stats[key] = []
+        self.recurrence_embedding_mse_similarity_stats[key].append(mse_similarity.item())
 
     def record_recurrence_logits_entropy_stats(self, iter_idx, entropy):
         if int(iter_idx) not in self.recurrence_logits_entropy_stats:
@@ -2419,10 +2441,27 @@ class GPT2LLM(NNModel):
                     h = output["output"]
                 
                 if self.track_recurrence_embd_similarity:
+                    # per-step similarities (x_before vs x_after at each recurrence step), shape [K]
                     cosine_similarity = output["cosine_similarity"]
                     mse_similarity = output["mse_similarity"]
                     recurrence_cosine_similarities.append(cosine_similarity)
                     recurrence_mse_similarities.append(mse_similarity)
+                    if self.training:
+                        for r in range(cosine_similarity.size(0)):
+                            self.record_recurrence_embedding_similarity_stats(
+                                cosine_similarity[r], mse_similarity[r], layer_idx, suffix=f"_step_{r}"
+                            )
+                        # similarity of the combined representation vs each per-step output
+                        if "cosine_similarity_vs_combined" in output:
+                            cosine_similarity_vs_combined = output["cosine_similarity_vs_combined"]
+                            mse_similarity_vs_combined = output["mse_similarity_vs_combined"]
+                            for r in range(cosine_similarity_vs_combined.size(0)):
+                                self.record_recurrence_embedding_similarity_stats(
+                                    cosine_similarity_vs_combined[r],
+                                    mse_similarity_vs_combined[r],
+                                    layer_idx,
+                                    suffix=f"_combined_vs_step_{r}",
+                                )
                 if self.return_each_recurrence_output:
                     each_recurrence_outputs = output["recurrence_outputs"]
             else:
@@ -2436,15 +2475,17 @@ class GPT2LLM(NNModel):
                     ).mean()
                     with torch.no_grad():
                         mse_similarity = nn.functional.mse_loss(before_h, h, reduction='mean').mean()
+                    recurrence_cosine_similarities.append(cosine_similarity.reshape(1))
+                    recurrence_mse_similarities.append(mse_similarity.reshape(1))
+                    if self.training:
+                        self.record_recurrence_embedding_similarity_stats(
+                            cosine_similarity, mse_similarity, layer_idx
+                        )
 
             if block_type in [BlockTypes.GROUP_RECURSIVE, BlockTypes.GROUP_RECURSIVE_MTP]:
                 block: Union[GroupRecursiveGPT2Block, GroupRecursiveGPT2MTPBlock] = self.transformer.h[layer_idx]  # type: ignore
                 if self.training:
                     self.record_recurrence_usage_stats(layer_idx, block)
-            
-            if self.track_recurrence_embd_similarity:
-                if self.training:
-                    self.record_recurrence_embedding_similarity_stats(cosine_similarity, mse_similarity, layer_idx)
 
         if self.separate_lm_head_norm:
             # this representation is given by the last iteration of the recurrent block
@@ -2462,8 +2503,8 @@ class GPT2LLM(NNModel):
         )
 
         if self.track_recurrence_embd_similarity:
-            final_output["recurrence_embedding_cosine_similarity"] = torch.stack(recurrence_cosine_similarities).mean() if recurrence_cosine_similarities else torch.tensor(0.0)
-            final_output["recurrence_embedding_mse_similarity"] = torch.stack(recurrence_mse_similarities).mean() if recurrence_mse_similarities else torch.tensor(0.0)
+            final_output["recurrence_embedding_cosine_similarity"] = torch.cat([t.reshape(-1) for t in recurrence_cosine_similarities]).mean() if recurrence_cosine_similarities else torch.tensor(0.0)
+            final_output["recurrence_embedding_mse_similarity"] = torch.cat([t.reshape(-1) for t in recurrence_mse_similarities]).mean() if recurrence_mse_similarities else torch.tensor(0.0)
         if self.return_each_recurrence_output:
             final_output["each_recurrence_hidden_states"] = each_recurrence_outputs  # pre-lm_head, [K, B, S, D]
             final_output["each_recurrence_logits"] = []
