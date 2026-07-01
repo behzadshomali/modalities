@@ -66,7 +66,7 @@ def split_jsonl_file(input_filename, num_files):
     except Exception as e:
         print(f"\nAn error occurred during splitting: {e}")
 
-BIG_FILE_NAME = "/raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/Nemotron-CC-highQuality-sampled_data_part_20.jsonl"
-NUMBER_OF_SPLIT_FILES = 5 
+BIG_FILE_NAME = "/raid/s3/opengptx/behzad_shomali/data/sampled_nvidia___nemotron-cc_JSONL/Nemotron-CC-highQuality-sampled_data_part_23_part_0_SMALL_EVAL.jsonl"
+NUMBER_OF_SPLIT_FILES = 60
 
 split_jsonl_file(BIG_FILE_NAME, NUMBER_OF_SPLIT_FILES)

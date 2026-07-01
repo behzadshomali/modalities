@@ -28,8 +28,8 @@ settings:
     enforce_last_step_evaluated: false
     enforce_last_step_checkpointed: false
   step_profile:
-    gradient_accumulation_steps: 5 # eight gpus
-    local_train_micro_batch_size: 3 # 12
+    gradient_accumulation_steps: 12 # 2 gpus
+    local_train_micro_batch_size: 5 # 12
     sequence_length: 2048
     dp_degree:
       instance_key: dp_degree
@@ -260,7 +260,7 @@ loss_fn:
     ponder_weight: 0.05 # Initial value (will be overridden by scheduler)
     align_first_head: false
     alignment_type: cosine
-    hidden_state_alignment_weight: 0
+    hidden_state_alignment_weight: 0.3
 
     # mtp_lambda_scheduler:
     #   instance_key: mtp_lambda_scheduler
@@ -395,17 +395,17 @@ model_raw:
     # recurrent_blocks_indices: [[1,2],[4,5],[7,8],[-10,-11]]
     recurrent_blocks_indices: [[-0,-1,-2,-3,-4,-5,-6,-7,-8,-9,-10,-11]]
     
-    recurrent_blocks_max_recurrences: 7
+    recurrent_blocks_max_recurrences: 3
     
     use_recurrence_embedding: true
-    track_recurrence_embd_similarity: false
+    track_recurrence_embd_similarity: true
     return_each_recurrence_output: true
     separate_lm_head_norm: false
     use_last_iteration_output_as_final: false
     use_combined_representation: true
     halt_threshold: 0.5
     aggregation_type: WS
-    gates_bias: [0.55, -3.0, -3.5, -4.0, -4.5, -5.0, -5.5]
+    gates_bias: [0.55, -3.0, -3.0] # Set the biases for the gates (one for each gate).
     do_shifted_input: false
     use_latent_autoregressive: true
     use_per_iter_norms: true
@@ -425,7 +425,7 @@ lr_scheduler:
     optimizer:
       instance_key: optimizer
       pass_type: BY_REFERENCE
-    max_lr: 0.001889 #0.002953
+    max_lr: 0.0019 #0.002953
     cycle_momentum: false
     div_factor: 10
     final_div_factor: 1
@@ -440,10 +440,10 @@ optimizer:
   component_key: optimizer
   variant_key: muon
   config:
-    lr: 0.001889 #0.002953
+    lr: 0.0019 #0.002953
     adamw_betas: [0.9, 0.95]
     adamw_eps: 1e-8
-    weight_decay: 0.0132 #1/(28682*0,002624)
+    weight_decay: 0.1
     weight_decay_groups_excluded: [embedding, layernorm, pytorch_rms_norm]
     wrapped_model:
       instance_key: initialized_model
@@ -480,9 +480,9 @@ evaluation_subscriber:
   variant_key: wandb
   config:
     global_rank: ${settings.cuda_env.global_rank}
-    project: nemotron_MATH_PartialMTP_Gating
+    project: Loop_MTP_paper_expert
     mode: ${settings.wandb_mode}
-    experiment_id: MARVIN_WoAlignemnt_12Block_HigherAlign_ScalerBias_woSigmoid_UniversalGate_DiffAlign_CoolLNS_woMTP_${model_raw.config.gates_bias}_AlignedHidden${loss_fn.config.hidden_state_alignment_weight}_NormEmbds${model_raw.config.use_per_iter_norms_tokens_embds}_alf${loss_fn.config.align_first_head}_woShift_${model_raw.config.aggregation_type}_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_${settings.experiment_id}
+    experiment_id: 12Block_WD${optimizer.config.weight_decay}_woSigmoid_UniversalGate_DiffAlign_CoolLNS_woMTP_${model_raw.config.gates_bias}_AlignedHidden${loss_fn.config.hidden_state_alignment_weight}_NormEmbds${model_raw.config.use_per_iter_norms_tokens_embds}_alf${loss_fn.config.align_first_head}_woShift_${model_raw.config.aggregation_type}_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_${settings.experiment_id}
     tags: [new_runs, 3MTP, 6BlockSize, wo_alignment]
     directory: ${settings.wandb_path}
     config_file_path: ${settings.config_file_path}

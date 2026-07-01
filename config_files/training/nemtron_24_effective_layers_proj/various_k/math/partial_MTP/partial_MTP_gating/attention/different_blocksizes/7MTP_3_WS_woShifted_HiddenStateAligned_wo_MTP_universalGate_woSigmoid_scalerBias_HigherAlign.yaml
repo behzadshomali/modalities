@@ -28,7 +28,7 @@ settings:
     enforce_last_step_evaluated: false
     enforce_last_step_checkpointed: false
   step_profile:
-    gradient_accumulation_steps: 3 # twelve gpus
+    gradient_accumulation_steps: 12 # two gpus
     local_train_micro_batch_size: 5 # 12
     sequence_length: 2048
     dp_degree:
@@ -260,7 +260,7 @@ loss_fn:
     ponder_weight: 0.05 # Initial value (will be overridden by scheduler)
     align_first_head: false
     alignment_type: cosine
-    hidden_state_alignment_weight: 0
+    hidden_state_alignment_weight: 0.3
 
     # mtp_lambda_scheduler:
     #   instance_key: mtp_lambda_scheduler
@@ -393,9 +393,9 @@ model_raw:
         eps: 1.0e-05
     use_weight_tying: false
     # recurrent_blocks_indices: [[1,2],[4,5],[7,8],[-10,-11]]
-    recurrent_blocks_indices: [[-0,-1,-2,-3,-4,-5,-6,-7,-8,-9,-10,-11]]
+    recurrent_blocks_indices: [[-9,-10,-11]]
     
-    recurrent_blocks_max_recurrences: 3
+    recurrent_blocks_max_recurrences: 7
     
     use_recurrence_embedding: true
     track_recurrence_embd_similarity: false
@@ -405,7 +405,7 @@ model_raw:
     use_combined_representation: true
     halt_threshold: 0.5
     aggregation_type: WS
-    gates_bias: [0.55, -3.0, -4.0] # Set the biases for the gates (one for each gate).
+    gates_bias: [0.55, -3.0, -3.5, -4.0, -4.5, -5.0, -5.5]
     do_shifted_input: false
     use_latent_autoregressive: true
     use_per_iter_norms: true
@@ -482,8 +482,8 @@ evaluation_subscriber:
     global_rank: ${settings.cuda_env.global_rank}
     project: nemotron_MATH_PartialMTP_Gating
     mode: ${settings.wandb_mode}
-    experiment_id: MARVIN_WoAlignemnt_12Block_HigherAlign_ScalerBias_woSigmoid_UniversalGate_DiffAlign_CoolLNS_woMTP_${model_raw.config.gates_bias}_AlignedHidden${loss_fn.config.hidden_state_alignment_weight}_NormEmbds${model_raw.config.use_per_iter_norms_tokens_embds}_alf${loss_fn.config.align_first_head}_woShift_${model_raw.config.aggregation_type}_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_${settings.experiment_id}
-    tags: [new_runs, 3MTP, 6BlockSize, wo_alignment]
+    experiment_id: 3Block_HigherAlign_ScalerBias_woSigmoid_UniversalGate_DiffAlign_CoolLNS_woMTP_${model_raw.config.gates_bias}_AlignedHidden${loss_fn.config.hidden_state_alignment_weight}_NormEmbds${model_raw.config.use_per_iter_norms_tokens_embds}_alf${loss_fn.config.align_first_head}_woShift_${model_raw.config.aggregation_type}_k=${model_raw.config.n_layer}_L=${model_raw.config.recurrent_blocks_max_recurrences}_${model_raw.config.recurrent_blocks_indices}_${settings.experiment_id}
+    tags: [new_runs, 3MTP, 6BlockSize, block_size]
     directory: ${settings.wandb_path}
     config_file_path: ${settings.config_file_path}
 

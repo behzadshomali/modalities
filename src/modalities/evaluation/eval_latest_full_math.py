@@ -15,28 +15,29 @@ from olmes_evaluator import evaluate_modalities_checkpoint
 # --- CONFIGURATION ---
 ENTITY = "behzadshomali"
 PROJECT = "nemotron_MATH_PartialMTP_Gating"
+# PROJECT = "Loop_MTP_paper_expert"
 CHECKPOINTS_ROOT = "/raid/s3/opengptx/behzad_shomali/checkpoints/"
-BENCHMARK_ROOT = "./benchmarks_full_v1"
+BENCHMARK_ROOT = "./benchmarks_full_v2"
 MAX_LENGTH = 2048
 
 # Only math_ac, full evaluation (no limit)
-TASKS_TO_RUN = ["modalities::math_ac"]
+TASKS_TO_RUN = [
+    # "modalities::math_ac",
+    "modalities:base_easy:math_bpb",
+    # "modalities:base_easy:qa_rc",
+    # "modalities:base_easy:code_bpb",
+    # "modalities:base_easy:qa_bpb",
+]
 EVAL_LIMIT = None  # No limit → evaluate on full dataset
-BATCH_SIZE = 18
+BATCH_SIZE = 8
 
 # MAPPING: folder_unique_identifier → wandb_run_id
 FOLDER_MAPPING = {
-    # "2026-04-12__15-10-12_5ad02f0f6debfb5f": "60nd14fb",
-    # "2026-04-11__13-08-00_dcfa3730754d817f": "4hp3xq5w",
-    # "2026-04-10__13-58-22_2d326a1b8e55ad77": "eds4wahr",
-    # "2026-04-08__13-41-08_c16ee3bff9052caa": "gywl97vs",
-    # "2026-04-07__16-09-41_9d97f3dbe24067f0": "z7ul6eva",
-    # "2026-04-03__11-08-19_abff36d0a7122c6b": "0s760ixs",
-    # "2026-02-11__10-36-48_abff36d0a7122c6b": "usbeeci5"
-    # "2026-04-14__10-15-10_8d7de5d6449e217e": "0rta3we6",
-    # "2026-04-14__12-58-01_4209bf8f68a75e14": "qf25ei5g"
-    "2026-04-15__16-33-46_4209bf8f68a75e14": "oe9tbd86",
-    "2026-04-13__21-19-16_8d7de5d6449e217e": "fd57jnzj"
+    "2026-05-04__18-26-55_49213dfd3a4271df": "t62gpsx1",
+    "2026-05-05__09-32-15_af5cc438b4fe413f": "tx0jvfpe",
+    # "2026-05-01__11-06-58_bc8a819c83852bb7": "jvuga5yf",
+    # "2026-04-30__19-55-28_822e53e158fe8987": "jymc65bx",
+    # "2026-04-28__12-10-28_896c22e651ddc1cb": "7sltcsf3"
 }
 
 

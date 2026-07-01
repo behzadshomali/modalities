@@ -1,0 +1,19 @@
+{
+  "woMTPloop7": {
+    "num_traces": 1319,
+    "total_sentences": 11632,
+    "correct": 263,
+    "accuracy": 0.1994,
+    "tag_distribution": {
+      "active_computation": 4314,
+      "problem_setup": 1937,
+      "fact_retrieval": 1861,
+      "result_consolidation": 1275,
+      "unknown": 1155,
+      "final_answer_emission": 1044,
+      "uncertainty_management": 251,
+      "plan_generation": 48,
+      "self_checking": 4
+    }
+  }
+}

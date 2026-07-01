@@ -1,0 +1,19 @@
+{
+  "loop15": {
+    "num_traces": 1319,
+    "total_sentences": 9457,
+    "correct": 251,
+    "accuracy": 0.1903,
+    "tag_distribution": {
+      "active_computation": 3867,
+      "problem_setup": 1796,
+      "fact_retrieval": 1319,
+      "final_answer_emission": 1161,
+      "result_consolidation": 814,
+      "unknown": 449,
+      "uncertainty_management": 130,
+      "plan_generation": 78,
+      "self_checking": 3
+    }
+  }
+}
