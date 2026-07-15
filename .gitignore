@@ -179,3 +179,5 @@ Eurolingua_tokenizer/*
 results/*
 src/modalities/notebooks/figures/*
 alex_paper/*
+# Large local data file (exceeds GitHub 100MB limit)
+src/modalities/notebooks/train.jsonl
